@@ -1,0 +1,27 @@
+# Jills add-ons
+
+One small add-on per harness. Each one calls the Jills library (`import { suggest, start, wait, status } from "jills"`)
+or the `jills` CLI / MCP server; none of them holds Jills logic of its own.
+
+| Folder         | Harness             | Status |
+|----------------|---------------------|--------|
+| `claude-code/` | Claude Code         | next stage: UserPromptSubmit hook + `/jills` slash command |
+| `pi/`          | Pi 1.0.4            | next stage: one extension file |
+| `dsh/`         | DeepSeek Harness    | next stage: dsh plugin with suggestion card + status line |
+
+Library API the add-ons use (see `src/index.ts`):
+
+```ts
+suggest({ session, message, recent?, repo?, cwd?, home? }): Promise<Suggestion>
+start(jill, { inputs?, cwd?, session?, home? }): Promise<RunRecord>      // detached runner, returns at once
+wait(runId, { timeoutMs?, pollMs?, onUpdate?, home? }): Promise<{ record, timedOut, line }>
+status(runId?, { home? }): RunRecord | RunRecord[] | undefined
+listJills({ home? }): Promise<JillSummary[]>
+dismiss(session) / quiet(session) / on(session, { unmute? }) / never({ session?, jill?, repo? })
+lastSuggestion(session): string | undefined                             // for "/jills go"
+setAuto(on: boolean)
+```
+
+`Suggestion` carries `text` (show to the user) and `agentContext` (give to the main agent),
+plus `auto` (the global switch). In manual mode the agent must ask the user; in auto mode it
+starts the Jill (MCP `start_jill`) and runs `jills wait <id>` in the background.
