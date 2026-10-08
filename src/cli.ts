@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { chat, check, dryRun, executeRun, go, listJills, never, newJill, on, runNow, setAuto, start, status, stop, suggest, wait } from "./api.js";
+import { chat, check, dryRun, executeRun, go, listJills, never, newJill, runNow, setAuto, start, status, stop, suggest, wait } from "./api.js";
 import { loadConfig } from "./config.js";
 import type { Turn } from "./plugins/types.js";
 import { resultLine, type RunEvent, type RunRecord, type RunState } from "./runs.js";
@@ -39,13 +40,12 @@ const stateExit = (s: RunState) => (s === "done" ? EXIT.ok : s === "stuck" ? EXI
 async function readStdinTurns(): Promise<Turn[]> {
   if (process.stdin.isTTY) return [];
   const chunks: Buffer[] = [];
-  const got = await new Promise<boolean>((resolve) => {
-    const t = setTimeout(() => resolve(chunks.length > 0), 500);
-    process.stdin.on("data", (c: Buffer) => chunks.push(c));
-    process.stdin.on("end", () => resolve(true));
-    process.stdin.on("error", () => resolve(false));
-    process.stdin.on("close", () => clearTimeout(t));
-  });
+  const read = (async () => {
+    for await (const c of process.stdin) chunks.push(c as Buffer);
+    return true;
+  })().catch(() => false);
+  // Wait at most 500 ms; the unref'd timer never holds the process open.
+  const got = await Promise.race([read, delay(500, undefined, { ref: false }).then(() => chunks.length > 0)]);
   process.stdin.destroy();
   try {
     const v: unknown = got ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : [];
@@ -85,11 +85,8 @@ type Out = (v: unknown, text: () => string) => void;
 type Command = [usage: string, run: (rest: string[], f: Flags, out: Out) => Promise<number>];
 const print = (text: string) => (console.log(text), EXIT.ok);
 /** dismiss / quiet / on: one chat control, then a short confirmation. */
-const chatCommand = (change: "dismiss" | "quiet" | "on", done: string): Command[1] => async (_r, f) => {
-  if (change === "on") await on(session(f), { unmute: f.unmute, repo: f.repo });
-  else await chat(session(f), change);
-  return print(done);
-};
+const chatCommand = (kind: "dismiss" | "quiet" | "on", done: string): Command[1] => async (_r, f) =>
+  (await chat(session(f), kind === "on" ? { kind, unmute: f.unmute ? (f.repo ?? true) : undefined } : { kind }), print(done));
 
 /** Every command: its usage line(s) for --help, and its handler (returns the exit code). */
 const COMMANDS: Record<string, Command> = {
@@ -210,22 +207,18 @@ export async function main(argv: string[]): Promise<number> {
   return c[1](rest, f, (v, text) => console.log(f.json ? JSON.stringify(v, null, 2) : text()));
 }
 
-const isMain = (() => {
-  try {
-    return !!process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
-  } catch {
-    return false;
-  }
-})();
+let isMain = false;
+try {
+  isMain = import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? "")).href;
+} catch {
+  /* not started as a script */
+}
 
 if (isMain)
-  main(process.argv.slice(2)).then(
-    (code) => {
-      if (code >= 0) process.exitCode = code;
-    },
-    (e: unknown) => {
+  main(process.argv.slice(2))
+    .then((code) => void (code >= 0 && (process.exitCode = code)))
+    .catch((e: Error) => {
       const usage = e instanceof UsageError;
-      console.error(`jills: ${(e as Error).message}${usage ? `\n\n${USAGE}` : ""}`);
+      console.error(`jills: ${e.message}${usage ? `\n\n${USAGE}` : ""}`);
       process.exitCode = usage ? EXIT.usage : EXIT.error;
-    },
-  );
+    });

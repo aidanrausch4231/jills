@@ -79,7 +79,7 @@ export interface IsolationPlugin {
   prepare(opts: { repo: string; jill: string; runId: string; config: JillsConfig }): Promise<Workspace>;
   /** Make a child workspace for a parallel writer, branched from the parent. */
   child(parent: Workspace, opts: { key: string; runId: string; config: JillsConfig }): Promise<Workspace>;
-  /** Merge a child back into the parent. Conflict leaves the parent untouched. */
+  /** Merge a child back into the parent; conflict leaves it untouched. Serializes its own git work per dir (also commit). */
   mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult>;
   /** Commit the workspace's changes; returns the commit or undefined when clean. */
   commit(ws: Workspace, message: string): Promise<string | undefined>;

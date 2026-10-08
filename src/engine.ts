@@ -5,9 +5,9 @@ import { MAX_DEPTH, type JillDef, type StepDef } from "./jillfile.js";
 import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { bootId } from "./proc.js";
-import { loadRecord, saveHeartbeat, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
+import { loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate } from "./template.js";
-import { KeyedMutex, MAX_TIMER_MS, parseLimit } from "./util.js";
+import { MAX_TIMER_MS, parseLimit } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
@@ -18,17 +18,6 @@ type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; dep
 const OUTPUT_LIMIT = 8000;
 /** How often a runner writes its heartbeat into the run record. */
 export const HEARTBEAT_MS = 5_000;
-
-/**
- * The total time limit a run uses: the Jill's timeout, else config
- * default_timeout, else 2h. A value <= 0 falls through to the next one; the
- * result is clamped to the largest timer Node allows. `label` names the value used.
- */
-export function totalLimit(jillTimeout: unknown, configDefault: unknown): { label: string; ms: number } {
-  const v = [jillTimeout, configDefault].find((x) => parseLimit(x)) ?? DEFAULT_TIMEOUT;
-  const ms = parseLimit(v)!;
-  return { label: ms === MAX_TIMER_MS ? `${ms}ms` : String(v), ms };
-}
 
 /** Steps that write and may run at the same time as another writer → child worktrees. */
 export function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | undefined): Set<string> {
@@ -102,7 +91,6 @@ export interface EngineOpts {
 export class RunEngine {
   private abort = new AbortController();
   private outcome: Outcome | undefined;
-  private mutex = new KeyedMutex();
   private hooks: Promise<unknown>[] = [];
   private isolation: IsolationPlugin | undefined;
   /** The state this runner last wrote; an observer's terminal state on disk is never overwritten. */
@@ -155,9 +143,8 @@ export class RunEngine {
     const boot = bootId();
     const beat = () => (r.heartbeat = { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
     beat();
-    const heart = setInterval(() => {
-      if (!this.lost && !saveHeartbeat(c.home, r.id, beat())) this.save(); // terminal on disk → save() halts
-    }, HEARTBEAT_MS);
+    // save() re-reads the record and never overwrites a terminal one: it halts the run instead.
+    const heart = setInterval(() => (beat(), this.save()), HEARTBEAT_MS);
     heart.unref();
     this.emit("started", undefined, r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
@@ -168,7 +155,10 @@ export class RunEngine {
     try {
       const jill = this.o.lookup(r.jill);
       if (!jill) throw new Error(`unknown Jill "${r.jill}"`);
-      const { label, ms } = totalLimit(jill.timeout, c.default_timeout);
+      // Total limit: the Jill's timeout, else config default, else 2h; <= 0 falls through, parseLimit clamps.
+      const v = [jill.timeout, c.default_timeout, DEFAULT_TIMEOUT].find((x) => parseLimit(x));
+      const ms = parseLimit(v)!;
+      const label = ms === MAX_TIMER_MS ? `${ms}ms` : String(v);
       Object.assign(r, { timeLimit: label, timeLimitMs: ms, deadline: new Date(Date.now() + ms).toISOString() });
       this.save();
       totalTimer = setTimeout(() => this.halt("stuck", `total time limit ${label} reached`), ms);
@@ -280,10 +270,10 @@ export class RunEngine {
       const iso = this.isolation;
       // Git stays outside agents: Jills commits after each writing step.
       if (iws.isolated && iso && step.writes && !step.jill) {
-        rec.commit = (await this.mutex.run(iws.dir, () => iso.commit(iws, `jills(${jill.name}): ${key}`))) ?? rec.commit;
+        rec.commit = (await iso.commit(iws, `jills(${jill.name}): ${key}`)) ?? rec.commit;
       }
       if (iws !== ws && iso) {
-        const m = await this.mutex.run(ws.dir, () => iso.mergeBack(ws, iws, `jills(${jill.name}): merge ${key}`));
+        const m = await iso.mergeBack(ws, iws, `jills(${jill.name}): merge ${key}`);
         if (!m.ok) {
           this.record.conflicts = [...new Set([...(this.record.conflicts ?? []), ...m.conflicts])];
           return fail("needs-you", m.message);

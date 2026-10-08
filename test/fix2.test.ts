@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { go, lastSuggested, runNow, start, stop, suggest, wait } from "../src/api.js";
+import { go, chat, runNow, start, stop, suggest, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
 import { parseJevReply, setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
 import { loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
@@ -88,7 +88,7 @@ test("jills go with no --input uses the last suggestion's saved inputs (CLI, new
   process.env.JILLS_FIX2_KEY = "k";
   setJevFetch(jevReply({ label: "new", jill: "hello", inputs: { who: "Saved Person" }, confidence: 0.95 }));
   assert.equal((await suggest({ home, session: "f2-go", message: "say hello", repo })).action, "suggest");
-  assert.deepEqual(await lastSuggested("f2-go", { home }), { jill: "hello", inputs: { who: "Saved Person" } });
+  assert.deepEqual(await chat("f2-go", { kind: "last" }, { home }), { jill: "hello", inputs: { who: "Saved Person" } });
   const env: NodeJS.ProcessEnv = { ...process.env, JILLS_HOME: home };
   delete env.JILLS_FIX2_KEY;
   const r = spawnSync(process.execPath, [cli, "go", "--session", "f2-go", "--repo", repo], { env, encoding: "utf8", timeout: 60_000 });

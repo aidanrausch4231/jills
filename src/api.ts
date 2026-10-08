@@ -6,7 +6,7 @@ import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./confi
 import { parallelWriters, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
-import type { ChatChange, JillSummary, LastSuggestion, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
+import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
 import { listRecords, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, waitForRun, type RunRecord, type WaitOpts } from "./runs.js";
 import { newId, writeFileAtomic } from "./util.js";
@@ -31,9 +31,7 @@ async function context(o: BaseOpts = {}): Promise<Ctx> {
   return { config, plugins: await loadPlugins(config), jills, lookup: (n) => jills.get(n) };
 }
 
-function summarize(j: JillDef): JillSummary {
-  return { name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), keywords: j.keywords };
-}
+const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), keywords: j.keywords });
 
 /** List saved Jills (first match per name across jill_paths). */
 export async function listJills(o: BaseOpts = {}): Promise<(JillSummary & { path: string })[]> {
@@ -127,9 +125,6 @@ async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record:
   return { c, record };
 }
 
-const engine = (c: Ctx, r: RunRecord, o: { onEvent?: EventListener; signal?: AbortSignal }) =>
-  new RunEngine(r, { config: c.config, plugins: c.plugins, lookup: c.lookup, ...o });
-
 /**
  * Start a Jill as a detached runner process (no background service). Returns
  * the queued run record at once; watch it with wait() or `jills wait <id>`.
@@ -155,13 +150,13 @@ export async function executeRun(id: string, o: BaseOpts & { onEvent?: EventList
   const r = loadRecord(c.config.home, id);
   if (!r) throw new Error(`no run ${id}`);
   if (r.state !== "queued") throw new Error(`run ${id} is ${r.state}, not queued`);
-  return engine(c, r, o).execute();
+  return new RunEngine(r, { ...c, onEvent: o.onEvent, signal: o.signal }).execute();
 }
 
 /** Run a Jill in the foreground, in this process. Resolves with the final record. */
 export async function runNow(jillName: string, o: StartOpts & { onEvent?: EventListener } = {}): Promise<RunRecord> {
   const { c, record } = await prepareRun(jillName, o);
-  return engine(c, record, o).execute();
+  return new RunEngine(record, { ...c, onEvent: o.onEvent }).execute();
 }
 
 export interface WaitResult {
@@ -202,31 +197,24 @@ export async function stop(id: string, o: BaseOpts & { graceMs?: number } = {}):
 
 // ---------------------------------------------------------------- chat controls
 
-/** Apply a chat control through the suggest plug-in; returns the chat's last suggestion afterwards. */
-async function chatChange(session: string | undefined, change: ChatChange, o: BaseOpts): Promise<LastSuggestion | undefined> {
+/**
+ * Apply a chat control (dismiss, quiet, on, last, ...) through the suggest plug-in;
+ * returns the chat's last suggestion afterwards. `on` with `unmute: true` unmutes
+ * the git root of `o.cwd`; a path in `unmute` names the repo itself.
+ */
+export async function chat(session: string | undefined, change: ChatChange | { kind: "on"; unmute?: string | true }, o: BaseOpts & { cwd?: string } = {}) {
   const c = await context(o);
-  return c.plugins.suggest.chat(session, change, c.config);
-}
-
-/** `dismiss` quiets this chat; `quiet` turns on quiet mode; `on` resumes suggestions. */
-export const chat = (session: string, change: "dismiss" | "quiet" | "on", o: BaseOpts = {}) => chatChange(session, { kind: change }, o);
-export const dismiss = (session: string, o: BaseOpts = {}) => chat(session, "dismiss", o);
-export const quiet = (session: string, o: BaseOpts = {}) => chat(session, "quiet", o);
-
-export async function on(session: string, o: BaseOpts & { repo?: string; cwd?: string; unmute?: boolean } = {}): Promise<LastSuggestion | undefined> {
-  return chatChange(session, { kind: "on", unmute: o.unmute ? await resolveRepo(o.repo, o.cwd) : undefined }, o);
+  if (change.kind === "on" && change.unmute !== undefined) change = { kind: "on", unmute: await resolveRepo(change.unmute === true ? undefined : change.unmute, o.cwd) };
+  return c.plugins.suggest.chat(session, change as ChatChange, c.config);
 }
 
 /** Mute a Jill (default: the last one suggested in this chat; else all) for this repo. */
 export async function never(o: BaseOpts & { repo?: string; cwd?: string; jill?: string; session?: string } = {}): Promise<string> {
   const repo = await resolveRepo(o.repo, o.cwd);
   if (!repo) throw new Error("never: not in a git repo; pass --repo <path>");
-  const last = await chatChange(o.session, { kind: "never", repo, jill: o.jill }, o);
+  const last = await chat(o.session, { kind: "never", repo, jill: o.jill }, o);
   return `muted ${o.jill ?? last?.jill ?? "all Jills"} for ${repo}`;
 }
-
-/** The last suggestion in a chat with the inputs Jev proposed. */
-export const lastSuggested = (session: string, o: BaseOpts = {}) => chatChange(session, { kind: "last" }, o);
 
 export interface GoOpts extends BaseOpts {
   session: string;
@@ -243,7 +231,7 @@ export interface GoOpts extends BaseOpts {
  * declares are kept; `dropped` names the rest.
  */
 export async function go(o: GoOpts): Promise<{ record: RunRecord; inputs: Record<string, string>; dropped: string[] }> {
-  const last = await lastSuggested(o.session, o);
+  const last = await chat(o.session, { kind: "last" }, o);
   const name = o.jill ?? last?.jill;
   if (!name) throw new Error("nothing was suggested in this chat; use jills start <jill>");
   const j = (await context(o)).lookup(name);
@@ -288,27 +276,27 @@ export async function check(o: BaseOpts = {}): Promise<CheckReport> {
     if (!j.worktree)
       warnings.push(`Jill "${j.name}" sets worktree: false (${NO_WORKTREE_NOTE}; Jills never commits). Worktrees are strongly recommended: remove the line or set worktree: true.`);
     try {
-      checkNesting(j, c.lookup);
+      checkNesting(j, c.lookup); // first: the walk below follows nested Jills
+      for (const d of describeSteps(c, j, {})) if (d.error) err(d.error);
     } catch (e) {
       err((e as Error).message);
     }
-    for (const d of describeSteps(c, j, {}, false)) if (d.error) err(d.error);
   }
   return { errors, warnings, jills: [...c.jills.keys()] };
 }
 
 /**
- * Each step of `root` as one dry-run line (nested Jills too, when `deep`), with
+ * Each step of `root` as one dry-run line (nested Jills too), with
  * placeholder run id and workspace. `error` is set when no runner can run a step.
  */
-function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, deep = true, jill = root, indent = ""): Generator<{ line: string; error?: string }> {
+function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, jill = root, indent = ""): Generator<{ line: string; error?: string }> {
   const par = root.worktree ? parallelWriters(jill, c.lookup) : new Set<string>();
   for (const s of jill.steps) {
     const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : ""].filter(Boolean);
     const head = `${indent}- ${s.name}${s.jill ? `: jill ${s.jill}` : ""}${meta.length ? ` (${meta.join("; ")})` : ""}`;
     if (s.jill) {
       yield { line: head };
-      if (deep) yield* describeSteps(c, root, inputs, deep, c.lookup(s.jill)!, indent + "  ");
+      yield* describeSteps(c, root, inputs, c.lookup(s.jill)!, indent + "  ");
       continue;
     }
     try {

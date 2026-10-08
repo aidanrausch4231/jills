@@ -73,13 +73,10 @@ const str = (v: unknown) => (v === undefined ? undefined : String(v));
 const rest = (o: Record<string, unknown>, known: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !known.includes(k)));
 const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-function tryAll(errs: string[], prefix: string, fn: () => unknown): void {
-  try {
-    fn();
-  } catch (e) {
-    errs.push(prefix + (e as Error).message);
-  }
-}
+/** Run fn; a throw becomes one error line. */
+const tryAll = (errs: string[], prefix: string, fn: () => unknown) => {
+  try { fn(); } catch (e) { errs.push(prefix + (e as Error).message); }
+};
 
 function parseStep(name: string, s: Record<string, unknown>, errs: string[]): StepDef {
   const kinds = ["agent", "run", "jill"].filter((k) => s[k] !== undefined);
@@ -155,26 +152,15 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
 
 function findCycle(steps: StepDef[]): string[] | undefined {
   const by = new Map(steps.map((s) => [s.name, s]));
-  const state = new Map<string, 1 | 2>();
-  const stack: string[] = [];
-  const visit = (n: string): string[] | undefined => {
-    if (state.get(n) === 2) return undefined;
-    if (state.get(n) === 1) return [...stack.slice(stack.indexOf(n)), n];
-    state.set(n, 1);
-    stack.push(n);
-    for (const d of by.get(n)?.needs ?? []) {
-      const c = by.has(d) ? visit(d) : undefined;
-      if (c) return c;
-    }
-    stack.pop();
-    state.set(n, 2);
-    return undefined;
+  const done = new Set<string>();
+  const visit = (n: string, path: string[]): string[] | undefined => {
+    if (path.includes(n)) return [...path.slice(path.indexOf(n)), n];
+    if (done.has(n) || !by.has(n)) return undefined;
+    const cycle = by.get(n)!.needs.map((d) => visit(d, [...path, n])).find(Boolean);
+    done.add(n);
+    return cycle;
   };
-  for (const s of steps) {
-    const c = visit(s.name);
-    if (c) return c;
-  }
-  return undefined;
+  return steps.map((s) => visit(s.name, [])).find(Boolean);
 }
 
 /**

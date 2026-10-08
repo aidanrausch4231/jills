@@ -23,9 +23,9 @@ start(jill, { inputs?, cwd?, session?, home? }): Promise<RunRecord>      // deta
 wait(runId, { timeoutMs?, pollMs?, onUpdate?, home? }): Promise<{ record, timedOut, line }>
 status(runId?, { home? }): RunRecord | RunRecord[] | undefined
 listJills({ home? }): Promise<JillSummary[]>
-dismiss(session) / quiet(session) / on(session, { unmute? }) / never({ session?, jill?, repo? })
-lastSuggestion(session): string | undefined                             // the Jill last suggested
-lastSuggested(session): { jill, inputs } | undefined                    // ... with the inputs Jev proposed
+chat(session, { kind: "dismiss" | "quiet" | "last" } | { kind: "on", unmute?: repo | true }, { cwd?, home? })
+                                       // returns the last suggestion { jill, inputs } | undefined
+never({ session?, jill?, repo?, cwd? }): Promise<string>               // mute a Jill (or all) for this repo
 go({ session, jill?, inputs?, cwd? }): Promise<{ record, inputs, dropped }>  // "/jills go": saved inputs + overrides
 setAuto(on: boolean)
 ```

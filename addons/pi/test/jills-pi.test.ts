@@ -87,11 +87,8 @@ function fakeCore(over: Partial<Record<keyof JillsCore, any>> = {}) {
       return { ...run, state: polls >= 2 ? "done" : "running" };
     }),
     listJills: rec("listJills", async () => [{ name: "hello", description: "say hi", inputs: [], keywords: [], path: "/x" }]),
-    dismiss: rec("dismiss", () => ({})),
+    chat: rec("chat", async (_s: string, ch: any) => (ch.kind === "last" ? { jill: "hello", inputs: {} } : undefined)),
     never: rec("never", async () => "muted hello for /repo"),
-    quiet: rec("quiet", () => ({})),
-    on: rec("on", async () => ({})),
-    lastSuggested: rec("lastSuggested", () => ({ jill: "hello", inputs: {} })),
     setAuto: rec("setAuto", () => {}),
     resultLine: (r: any) => `jills run ${r.id} ${r.state}: ${r.jill} | branch ${r.branch} | logs ${r.logDir}`,
     TERMINAL: new Set(["done", "failed", "stuck", "needs-you"]),
@@ -263,7 +260,7 @@ describe("pi add-on: /jills commands", () => {
   });
 
   it("/jills go with nothing suggested warns", async () => {
-    const t = setup({ lastSuggested: () => undefined });
+    const t = setup({ chat: async () => undefined });
     await t.commands.get("jills").handler("go", t.ctx);
     assert.equal(t.called("go").length, 0);
     assert.match(t.calls.notify.at(-1)![0], /nothing suggested/);
@@ -282,11 +279,12 @@ describe("pi add-on: /jills commands", () => {
     await run("status");
     await run("status r1");
     await run("");
-    assert.deepEqual(t.called("dismiss")[0], ["pi-s1", { home: undefined }]);
+    const chats = t.called("chat");
+    assert.deepEqual(chats[0], ["pi-s1", { kind: "dismiss" }, { home: undefined }]);
     assert.equal(t.called("never")[0]![0].jill, "hello");
     assert.equal(t.called("never")[0]![0].session, "pi-s1");
-    assert.equal(t.called("quiet").length, 1);
-    assert.equal(t.called("on")[0]![1].unmute, true);
+    assert.deepEqual(chats[1]![1], { kind: "quiet" });
+    assert.deepEqual(chats[2]!.slice(1), [{ kind: "on", unmute: true }, { cwd: "/repo", home: undefined }]);
     assert.deepEqual(t.called("setAuto"), [[true, { home: undefined }]]);
     const notes = t.calls.notify.map(([m]) => m).join("\n");
     assert.match(notes, /muted hello/);

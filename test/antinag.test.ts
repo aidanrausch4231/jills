@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dismiss, never, on, quiet, suggest, start, wait, setAuto } from "../src/api.js";
+import { chat, never, suggest, start, wait, setAuto } from "../src/api.js";
 import { loadSession } from "../src/plugins/suggest-default.js";
 import { loadConfig } from "../src/config.js";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
@@ -40,7 +40,7 @@ test("ignored suggestion: wait for a new task (same/talk stay quiet)", async () 
 test("dismissed -> quiet for this chat only", async () => {
   const { home, repo } = setup();
   await suggest({ home, session: "dis", message: "bug", repo });
-  dismiss("dis", { home });
+  await chat("dis", { kind: "dismiss" }, { home });
   for (let i = 0; i < 4; i++) {
     const s = await suggest({ home, session: "dis", message: "bug " + i, repo });
     assert.equal(s.action, "quiet");
@@ -51,9 +51,9 @@ test("dismissed -> quiet for this chat only", async () => {
 
 test("quiet mode and on", async () => {
   const { home, repo } = setup();
-  quiet("qm", { home });
+  await chat("qm", { kind: "quiet" }, { home });
   assert.match((await suggest({ home, session: "qm", message: "bug", repo })).reason, /quiet mode/);
-  await on("qm", { home });
+  await chat("qm", { kind: "on" }, { home });
   assert.equal((await suggest({ home, session: "qm", message: "bug", repo })).action, "suggest");
 });
 
@@ -65,7 +65,7 @@ test("never mutes a Jill per repo; on --unmute clears it", async () => {
   assert.equal((await suggest({ home, session: "nv2", message: "bug", repo })).action, "quiet");
   assert.equal((await suggest({ home, session: "nv3", message: "docs", repo })).jill, "docs");
   assert.equal((await suggest({ home, session: "nv4", message: "bug", repo: other })).jill, "fix-bug");
-  await on("nv5", { home, repo, unmute: true });
+  await chat("nv5", { kind: "on", unmute: repo }, { home });
   assert.equal((await suggest({ home, session: "nv5", message: "bug", repo })).jill, "fix-bug");
 });
 

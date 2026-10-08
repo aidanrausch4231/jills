@@ -83,15 +83,6 @@ export function loadRecord(home: string, id: string): RunRecord | undefined {
   return readJson<RunRecord>(recordPath(home, id));
 }
 
-/** Write only the heartbeat; never touches a record that is already terminal on disk. Returns false then. */
-export function saveHeartbeat(home: string, id: string, hb: Heartbeat): boolean {
-  const r = loadRecord(home, id);
-  if (!r || TERMINAL.has(r.state)) return false;
-  r.heartbeat = hb;
-  saveRecord(home, r);
-  return true;
-}
-
 export function listRecords(home: string): RunRecord[] {
   const dir = runsDir(home);
   if (!existsSync(dir)) return [];

@@ -75,7 +75,9 @@ const defaultSuggest: SuggestPlugin = {
   apiVersion: 1,
   name: "default",
   async suggest(o, c) {
-    const { home, auto, threshold } = c.config;
+    const { home, auto } = c.config;
+    const t = (c.config.raw.jev as { threshold?: unknown } | undefined)?.threshold; // config `jev.threshold`
+    const threshold = typeof t === "number" ? t : 0.7;
     const s = loadSession(home, o.session);
     s.messages += 1;
     const quiet = (reason: string, extra: Partial<Suggestion> = {}): Suggestion => {

@@ -6,9 +6,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { check, newJill, runNow, start, status, stop, suggest, wait } from "../src/api.js";
 import { NO_WORKTREE_NOTE, parseJill } from "../src/jillfile.js";
-import { totalLimit } from "../src/engine.js";
 import { bootId } from "../src/proc.js";
-import { listRecords, loadRecord, refreshRecord, saveHeartbeat, saveRecord, type RunRecord } from "../src/runs.js";
+import { listRecords, loadRecord, refreshRecord, saveRecord, type RunRecord } from "../src/runs.js";
 import { MAX_TIMER_MS, sleep } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -152,7 +151,6 @@ test("the runner's next beat never overwrites stuck on disk; the runner stops it
   });
   const r = loadRecord(home, id)!;
   saveRecord(home, { ...r, state: "stuck", error: "marked by test", finished: new Date().toISOString() });
-  assert.equal(saveHeartbeat(home, id, r.heartbeat!), false);
   const t0 = Date.now();
   const final = await run; // the runner's 5 s beat sees stuck on disk and halts its steps
   assert.ok(Date.now() - t0 < 15_000);
@@ -173,13 +171,19 @@ test("a real run records its runner pid and a monotonic heartbeat with the boot 
 
 // ---------------------------------------------------------------- 2. time limits
 
-test("totalLimit: <= 0 falls back to the default, huge values clamp to 2^31-1 ms", () => {
-  assert.deepEqual(totalLimit("0", undefined), { label: "2h", ms: 7_200_000 });
-  assert.deepEqual(totalLimit(0, "2h"), { label: "2h", ms: 7_200_000 });
-  assert.deepEqual(totalLimit("0s", "5m"), { label: "5m", ms: 300_000 });
-  assert.deepEqual(totalLimit(undefined, "0"), { label: "2h", ms: 7_200_000 });
-  assert.deepEqual(totalLimit("9999999h", undefined), { label: `${MAX_TIMER_MS}ms`, ms: MAX_TIMER_MS });
-  assert.deepEqual(totalLimit("90s", "5m"), { label: "90s", ms: 90_000 });
+test("total limit: <= 0 falls back to the default, huge values clamp to 2^31-1 ms", async () => {
+  const cases: [string, string, string, number][] = [
+    ["", "0", "2h", 7_200_000],
+    ["0s", "5m", "5m", 300_000],
+    ["9999999h", "", `${MAX_TIMER_MS}ms`, MAX_TIMER_MS],
+    ["90s", "5m", "90s", 90_000],
+  ];
+  for (const [jt, dt, label, ms] of cases) {
+    const home = tmpHome(dt ? `default_timeout: "${dt}"\n` : "");
+    writeJill(home, "lim", `worktree: false\n${jt ? `timeout: "${jt}"\n` : ""}steps:\n  a: {run: 'true'}`);
+    const r = await runNow("lim", { home, cwd: tmp() });
+    assert.deepEqual([r.state, r.timeLimit, r.timeLimitMs], ["done", label, ms], `${jt}/${dt}`);
+  }
 });
 
 test("timeout: 0 runs with the default limit (not instantly stuck) and records it", async () => {

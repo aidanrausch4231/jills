@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 /** The part of the Jills library this add-on uses (tests pass a fake). */
 export type JillsCore = Pick<
   typeof JillsLib,
-  "suggest" | "start" | "go" | "status" | "listJills" | "dismiss" | "never" | "quiet" | "on" | "lastSuggested" | "setAuto" | "resultLine" | "TERMINAL"
+  "suggest" | "start" | "go" | "status" | "listJills" | "chat" | "never" | "setAuto" | "resultLine" | "TERMINAL"
 >;
 
 export interface JillsPiOptions {
@@ -260,7 +260,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
         const core = await getCore();
         switch (sub) {
           case "go": {
-            const jill = words[0] ?? (await core.lastSuggested(session, { home }))?.jill;
+            const jill = words[0] ?? (await core.chat(session, { kind: "last" }, { home }))?.jill;
             if (!jill) {
               notify("Jills: nothing suggested in this chat yet; use /jills go <jill> [key=value ...]", "warning");
               return;
@@ -281,7 +281,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
             return;
           }
           case "dismiss":
-            await core.dismiss(session, { home });
+            await core.chat(session, { kind: "dismiss" }, { home });
             setWidget(undefined);
             notify("Jills: quiet for this chat (/jills on to resume).");
             return;
@@ -292,12 +292,12 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
             return;
           }
           case "quiet":
-            await core.quiet(session, { home });
+            await core.chat(session, { kind: "quiet" }, { home });
             setWidget(undefined);
             notify("Jills: quiet mode on for this chat (/jills on to resume).");
             return;
           case "on":
-            await core.on(session, { unmute: words.includes("--unmute"), cwd: ctx.cwd, home });
+            await core.chat(session, { kind: "on", unmute: words.includes("--unmute") || undefined }, { cwd: ctx.cwd, home });
             notify("Jills: suggestions on for this chat.");
             return;
           case "status": {

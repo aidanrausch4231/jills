@@ -9,8 +9,6 @@ export interface JillsConfig {
   home: string;
   auto: boolean;
   jill_paths: string[];
-  /** Minimum matcher confidence for a suggestion (config `jev.threshold`, default 0.7). */
-  threshold: number;
   /** Extra single-file plug-ins to load (absolute paths or relative to home). */
   plugins: string[];
   /** Total-run time limit when a Jill sets none (config `default_timeout`, default 2h). */
@@ -46,13 +44,11 @@ export function loadConfig(home = jillsHome()): JillsConfig {
   const file = configPath(home);
   const parsed: unknown = existsSync(file) ? YAML.parse(readFileSync(file, "utf8")) : undefined;
   const raw = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
-  const threshold = (raw.jev as { threshold?: unknown } | undefined)?.threshold;
   const dt = raw.default_timeout;
   return {
     home,
     auto: raw.auto === true,
     jill_paths: pathList(raw.jill_paths, home, [join(home, "jills")]),
-    threshold: typeof threshold === "number" ? threshold : 0.7,
     plugins: pathList(raw.plugins, home, []),
     default_timeout: typeof dt === "string" || typeof dt === "number" ? dt : DEFAULT_TIMEOUT,
     raw,

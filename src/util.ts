@@ -46,15 +46,3 @@ export function newId(): string {
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** A tiny promise mutex keyed by string. */
-export class KeyedMutex {
-  private tails = new Map<string, Promise<unknown>>();
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.tails.get(key) ?? Promise.resolve();
-    const result = prev.then(fn, fn);
-    const tail = result.catch(() => undefined);
-    this.tails.set(key, tail);
-    void tail.then(() => this.tails.get(key) === tail && this.tails.delete(key));
-    return result;
-  }
-}

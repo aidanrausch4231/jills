@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { check, dryRun, lastSuggested, suggest } from "../src/api.js";
+import { check, dryRun, chat, suggest } from "../src/api.js";
 import { validatePlugin } from "../src/plugins/index.js";
 import { loadRecord, markTerminal, saveRecord, type RunRecord } from "../src/runs.js";
 import { MAX_TIMER_MS, parseLimit } from "../src/util.js";
@@ -27,7 +27,7 @@ test("a suggest plug-in from config replaces the default; core still drops undec
   assert.equal(s.reason, "always");
   assert.deepEqual(s.inputs, { who: "Bo" }, "undeclared repo dropped from the plug-in's answer");
   assert.deepEqual(s.matched.inputs, { who: "M" }, "ctx.match drops undeclared inputs before the plug-in sees them");
-  assert.deepEqual(await lastSuggested("s1", { home }), { jill: "hello", inputs: { who: "saved" } });
+  assert.deepEqual(await chat("s1", { kind: "last" }, { home }), { jill: "hello", inputs: { who: "saved" } });
   assert.throws(() => validatePlugin({ slot: "suggest", apiVersion: 1, name: "x", suggest() {} }, "f.js"), /missing chat\(\)/);
 });
 

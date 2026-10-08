@@ -60,8 +60,8 @@ export interface JillsCore {
   status(id: string, o?: { home?: string }): CoreRunRecord | undefined
   /** Saved Jills. */
   listJills(o?: { home?: string }): Promise<{ name: string; inputs: string[] }[]>
-  /** Quiet this chat. */
-  dismiss(session: string, o?: { home?: string }): unknown
+  /** Apply a chat control; the bridge only sends dismiss (quiet this chat). */
+  chat(session: string, change: { kind: 'dismiss' }, o?: { home?: string }): unknown
   /** Mute a Jill for a repo. */
   never(o: { session?: string; jill?: string; cwd?: string; home?: string }): Promise<string>
   /** Full one-line result. */
@@ -293,7 +293,7 @@ export class JillsBridge {
   dismiss(action: CardAction): Promise<JillsCard> {
     return this.update(action.sessionId, action.messageId, async (card) => {
       const core = await this.core()
-      await core.dismiss(jillsSession(action.sessionId), this.opts())
+      await core.chat(jillsSession(action.sessionId), { kind: 'dismiss' }, this.opts())
       return { ...card, kind: 'closed', note: 'Okay. Jev stays quiet in this chat.' }
     })
   }
