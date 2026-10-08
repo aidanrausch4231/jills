@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["es2024", "dom", "dom.iterable"]
+  },
+  "include": ["src/client", "src/types.ts", "lib/typert.remote-client.d.ts"]
+}

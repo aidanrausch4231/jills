@@ -1,0 +1,6 @@
+# dsh bundle patch: `dsh plugin add <this folder>` activates it and inserts the Jills plugin.
+# Host config (all optional): home (Jills home, default $JILLS_HOME or ~/.jills),
+# lib (Jills library index.js, default $JILLS_LIB or this repo's dist/src/index.js), maxAgeMs.
+- insert:
+    - id: jills
+      name: '@jills/dsh'
