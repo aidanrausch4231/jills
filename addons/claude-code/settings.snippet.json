@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /home/rausch/harness/v4/personal/jills/addons/claude-code/hook.mjs",
+            "timeout": 15,
+            "statusMessage": "Jev is checking for a Jill..."
+          }
+        ]
+      }
+    ]
+  }
+}
