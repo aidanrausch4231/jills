@@ -4,19 +4,12 @@ import YAML from "yaml";
 import { renderShellTemplate } from "./template.js";
 import { parseDuration } from "./util.js";
 
-export interface InputDef {
-  name: string;
-  description?: string;
-  default?: string;
-  required?: boolean;
-}
+export type InputDef = { name: string; description?: string; default?: string; required?: boolean };
 
 export interface StepDef {
   name: string;
-  agent?: string;
-  run?: string;
-  jill?: string;
-  task?: string;
+  /** Exactly one of agent, run, jill; `task` is the agent's task text. */
+  agent?: string; run?: string; jill?: string; task?: string;
   needs: string[];
   copies: number;
   writes: boolean;
@@ -24,15 +17,16 @@ export interface StepDef {
   timeout?: string | number;
   /** Inputs passed to a nested Jill (templated). Defaults to the parent's inputs. */
   inputs?: Record<string, string>;
+  /** Back-arrow: on a real failure rerun `backTo` and every step after it, `maxRounds` rounds in all. */
+  onFail?: { backTo: string; maxRounds: number };
+  /** May squash-merge the run branch into the branch the run started from (needs worktree: true). */
+  merges: boolean;
   /** Unknown step fields, passed through to plug-ins. */
   extra: Record<string, unknown>;
 }
 
 export interface JillDef {
-  name: string;
-  description: string;
-  when?: string;
-  keywords: string[];
+  name: string; description: string; when?: string; keywords: string[];
   inputs: InputDef[];
   steps: StepDef[];
   worktree: boolean;
@@ -40,16 +34,17 @@ export interface JillDef {
   box?: string;
   machine: string;
   timeout?: string | number;
-  body: string;
-  path: string;
+  /** The markdown body and the JILL.md path. */
+  body: string; path: string;
   /** Unknown top-level fields, passed through to plug-ins (e.g. goal, checks). */
   extra: Record<string, unknown>;
 }
 
 const JILL_KEYS = ["name", "description", "when", "keywords", "inputs", "steps", "worktree", "box", "machine", "timeout"];
-const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs"];
+const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs", "on_fail", "merges"];
 export const MAX_COPIES = 16;
 export const MAX_DEPTH = 4;
+export const MAX_ROUNDS = 10;
 /** Shown wherever a Jill with worktree: false is suggested or checked. */
 export const NO_WORKTREE_NOTE = "no worktree: edits your checkout directly";
 
@@ -86,6 +81,10 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
   tryAll(errs, `step ${name}: `, () => parseDuration(s.timeout));
   if (s.run !== undefined) tryAll(errs, `step ${name}: `, () => renderShellTemplate(String(s.run), { inputs: {} }));
   if (s.inputs !== undefined && !isMap(s.inputs)) errs.push(`step ${name}: inputs must be a map`);
+  const of = s.on_fail, rounds = isMap(of) && of.max_rounds !== undefined ? Number(of.max_rounds) : 3;
+  const onFail = isMap(of) && typeof of.back_to === "string" && Number.isInteger(rounds) && rounds >= 1 ? { backTo: of.back_to, maxRounds: Math.min(rounds, MAX_ROUNDS) } : undefined;
+  if (s.merges === true && s.jill !== undefined) errs.push(`step ${name}: merges: true needs an agent: or run: step`);
+  if (of !== undefined && !onFail) errs.push(`step ${name}: on_fail must be { back_to: <step>, max_rounds: 1..${MAX_ROUNDS} }`);
   return {
     name,
     agent: str(s.agent),
@@ -98,6 +97,8 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
     model: str(s.model),
     timeout: s.timeout as string | number | undefined,
     inputs: isMap(s.inputs) ? Object.fromEntries(Object.entries(s.inputs).map(([k, v]) => [k, String(v)])) : undefined,
+    onFail,
+    merges: s.merges === true,
     extra: rest(s, STEP_KEYS),
   };
 }
@@ -126,8 +127,12 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   }
   const names = new Set(steps.map((s) => s.name));
   for (const s of steps) for (const n of s.needs) if (!names.has(n)) errs.push(`step ${s.name}: needs unknown step "${n}"`);
-  const cyc = findCycle(steps);
-  if (cyc) errs.push(`steps form a cycle: ${cyc.join(" -> ")}`);
+  const cyc = steps.filter((s) => ancestors(steps, s.name).has(s.name)).map((s) => s.name);
+  if (cyc.length) errs.push(`steps form a cycle through: ${cyc.join(", ")}`);
+  for (const s of steps) {
+    if (s.onFail && !ancestors(steps, s.name).has(s.onFail.backTo)) errs.push(`step ${s.name}: on_fail back_to "${s.onFail.backTo}" must be an earlier step it needs (directly or not)`);
+    if (s.merges && data.worktree === false) errs.push(`step ${s.name}: merges: true needs worktree: true`);
+  }
   tryAll(errs, "", () => parseDuration(data.timeout));
   const box = data.box == null || data.box === false ? undefined : data.box;
   if (box !== undefined && (typeof box !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(box))) errs.push("box must be a plug-in name such as docker or openshell");
@@ -150,17 +155,10 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   };
 }
 
-function findCycle(steps: StepDef[]): string[] | undefined {
-  const by = new Map(steps.map((s) => [s.name, s]));
-  const done = new Set<string>();
-  const visit = (n: string, path: string[]): string[] | undefined => {
-    if (path.includes(n)) return [...path.slice(path.indexOf(n)), n];
-    if (done.has(n) || !by.has(n)) return undefined;
-    const cycle = by.get(n)!.needs.map((d) => visit(d, [...path, n])).find(Boolean);
-    done.add(n);
-    return cycle;
-  };
-  return steps.map((s) => visit(s.name, [])).find(Boolean);
+/** Every step `name` needs, directly or not. */
+export function ancestors(steps: StepDef[], name: string, seen = new Set<string>()): Set<string> {
+  for (const d of steps.find((s) => s.name === name)?.needs ?? []) if (!seen.has(d)) ancestors(steps, d, seen.add(d));
+  return seen;
 }
 
 /**
@@ -175,12 +173,8 @@ export function refusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap
   return undefined;
 }
 
-export interface Scan<T> {
-  items: Map<string, T>;
-  /** name -> every path found, when more than one. First path wins. */
-  duplicates: Map<string, string[]>;
-  errors: string[];
-}
+/** `duplicates`: name -> every path found, when more than one (the first path wins). */
+export type Scan<T> = { items: Map<string, T>; duplicates: Map<string, string[]>; errors: string[] };
 
 /** Parse every file from each folder in order; the first item with a name wins. */
 export function scanFirstWins<T extends { name: string }>(paths: string[], files: (dir: string) => string[], parse: (file: string) => T): Scan<T> {

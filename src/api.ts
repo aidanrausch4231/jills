@@ -12,17 +12,10 @@ import { stopTagged } from "./proc.js";
 import { listRecords, loadHeartbeat, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, type RunRecord } from "./runs.js";
 import { newId, sleep, writeFileAtomic } from "./util.js";
 
-export interface BaseOpts {
-  /** Jills home; defaults to $JILLS_HOME or ~/.jills. */
-  home?: string;
-}
+/** `home`: Jills home; defaults to $JILLS_HOME or ~/.jills. */
+export type BaseOpts = { home?: string };
 
-interface Ctx {
-  config: JillsConfig;
-  plugins: PluginSet;
-  jills: Map<string, JillDef>;
-  lookup: (name: string) => JillDef | undefined;
-}
+type Ctx = { config: JillsConfig; plugins: PluginSet; jills: Map<string, JillDef>; lookup: (name: string) => JillDef | undefined };
 
 const configOf = (o: BaseOpts) => loadConfig(o.home ?? jillsHome());
 const homeOf = (o: BaseOpts) => configOf(o).home;
@@ -41,9 +34,8 @@ export async function listJills(o: BaseOpts = {}): Promise<(JillSummary & { path
 }
 
 export interface SuggestOpts extends BaseOpts {
-  /** Chat session id (anti-nag state is kept per id). */
-  session: string;
-  message: string;
+  /** Chat session id (anti-nag state is kept per id) and the message to check. */
+  session: string; message: string;
   /** Recent turns before this message; the last 3 are used. */
   recent?: Turn[];
   /** Repo the chat works in (for per-repo "never"). Defaults to the git root of cwd. */
@@ -83,7 +75,7 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
     }
     return undefined;
   };
-  const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree }));
+  const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree, merges: j.steps.some((s) => s.merges) }));
   const input = { session: o.session, message: o.message, recent: (o.recent ?? []).slice(-3), repo: await resolveRepo(o.repo, o.cwd) };
   const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, match });
   return s.jill && s.inputs ? { ...s, inputs: declaredInputs(c.lookup(s.jill), s.inputs) } : s;
@@ -158,8 +150,7 @@ export async function runNow(jillName: string, o: StartOpts & { onEvent?: EventL
 }
 
 export interface WaitOpts extends BaseOpts {
-  timeoutMs?: number;
-  pollMs?: number;
+  timeoutMs?: number; pollMs?: number;
   /** Observer-clock age of a heartbeat stamp that counts as stopped (default STALE_MS). */
   staleMs?: number;
   onUpdate?: (r: RunRecord) => void;
@@ -226,8 +217,7 @@ export interface GoOpts extends BaseOpts {
   /** Jill to start; defaults to the one last suggested in this chat. */
   jill?: string;
   /** Inputs given by hand; they override the saved suggestion's inputs. */
-  inputs?: Record<string, string>;
-  cwd?: string;
+  inputs?: Record<string, string>; cwd?: string;
 }
 
 /**
@@ -267,6 +257,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
     if (refused) err(refused);
     if (!j.worktree)
       warnings.push(`Jill "${j.name}" sets worktree: false (${NO_WORKTREE_NOTE}; Jills never commits). Worktrees are strongly recommended: remove the line or set worktree: true.`);
+    for (const s of j.steps.filter((x) => x.merges)) warnings.push(`Jill "${j.name}" step ${s.name} merges into the branch the run started from when done (merges: true)`);
     try {
       checkNesting(j, c.lookup); // first: the walk below follows nested Jills
       for (const d of describeSteps(c, j, {})) if (d.error) err(d.error);
@@ -284,7 +275,8 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
 function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, jill = root, indent = ""): Generator<{ line: string; error?: string }> {
   const par = root.worktree ? parallelWriters(jill, c.lookup) : new Set<string>();
   for (const s of jill.steps) {
-    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : ""].filter(Boolean);
+    const loop = s.onFail ? `on fail back to ${s.onFail.backTo}, max ${s.onFail.maxRounds} rounds` : "";
+    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);
     const head = `${indent}- ${s.name}${s.jill ? `: jill ${s.jill}` : ""}${meta.length ? ` (${meta.join("; ")})` : ""}`;
     if (s.jill) { // nested Jill: the same inputs the engine gives it
       yield { line: head };

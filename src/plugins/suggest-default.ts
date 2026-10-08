@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { NO_WORKTREE_NOTE } from "../jillfile.js";
@@ -64,9 +65,14 @@ function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): bool
 /** The main agent's instructions for a suggestion (manual: ask the user; auto: start it). */
 function agentText(auto: boolean, what: string, startCmd: string): string {
   return auto
-    ? `[Jills] Jev matched ${what}. Auto mode is on: start it with the start_jill MCP tool (or \`${startCmd}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself.`
+    ? `[Jills] Jev matched ${what}. Auto mode is on: start it with the start_jill MCP tool (or \`${startCmd}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself unless the Jill says it merges.`
     : `[Jills] Jev suggests ${what}. Manual mode: do NOT start it yourself. Ask the user whether to run it; they can type /jills go to start it, /jills dismiss to quiet this chat, or /jills never to mute it for this repo.`;
 }
+
+/** The chat repo's current branch, for "merges into <branch> when done". */
+const branchOf = (repo?: string) => {
+  try { return execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return "your branch"; }
+};
 
 const settle = (s: SessionState) => void (s.lastSuggestion && (s.lastSuggestion.resolved = true));
 
@@ -118,7 +124,7 @@ const defaultSuggest: SuggestPlugin = {
     s.suggested.push(j.name);
     saveSession(home, s);
     const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
-    const warning = j.worktree ? undefined : NO_WORKTREE_NOTE;
+    const warning = [j.worktree ? "" : NO_WORKTREE_NOTE, j.merges ? `merges into ${branchOf(o.repo)} when done` : ""].filter(Boolean).join("; ") || undefined;
     const warnText = warning ? ` (${warning})` : "";
     const text = `Jev: this looks like a job for Jill "${j.name}"${inputText}: ${j.description}${warnText}`;
     const startCmd = `jills start ${j.name}${Object.entries(inputs).map(([k, v]) => ` --input ${k}=${JSON.stringify(v)}`).join("")} --session ${o.session}`;

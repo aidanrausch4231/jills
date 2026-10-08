@@ -178,11 +178,7 @@ async function runner(id: string): Promise<number> {
 
 export async function main(argv: string[]): Promise<number> {
   let parsed;
-  try {
-    parsed = parse(argv);
-  } catch (e) {
-    throw new UsageError((e as Error).message);
-  }
+  try { parsed = parse(argv); } catch (e) { throw new UsageError((e as Error).message); }
   const f = parsed.values;
   const [cmd, ...rest] = parsed.positionals;
   if (!cmd || f.help || cmd === "help") {
@@ -196,11 +192,7 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 const isMain = (() => {
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? "")).href;
-  } catch {
-    return false; // not started as a script
-  }
+  try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? "")).href; } catch { return false; } // not started as a script
 })();
 
 if (isMain)

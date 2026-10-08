@@ -16,8 +16,9 @@ Read this first. It applies to every agent (human or AI) changing this repo.
   command (`run:`), or **another Jill** (`jill:`). Small Jills nest into bigger ones.
 - A **run** gets one git worktree (on by default, strongly recommended). The outermost
   Jill decides worktree, box and machine; nested Jills share them. Parallel writing
-  steps get child worktrees merged back; conflicts stop at "needs you". Jills never
-  merges into the user's branch.
+  steps get child worktrees merged back; conflicts stop at "needs you". Only a step that
+  declares `merges: true` may squash-merge into the user's branch, and core verifies it.
+- A step can send work back to an earlier step on failure (`on_fail: {back_to, max_rounds}`).
 - The main agent is told when a Jill starts and is woken with the result (`jills wait`).
 
 ## The goal: simple and extendable, like Pi
@@ -43,7 +44,7 @@ Jills follows the same rules:
 
 - `src/` — core library and CLI (`jills ...`).
 - `src/plugins/` — built-in plug-ins (Jev and keyword matchers, command and agent
-  runners, worktree isolation, exit-code check, default suggest/anti-nag) and the plug-in interface.
+  runners, worktree isolation, exit-code and verdict checks, default suggest/anti-nag) and the plug-in interface.
 - `addons/` — one folder per harness: `mcp/` (any MCP client, served by `jills mcp`), `pi/`,
   `dsh/` (v1); `claude-code/` (v2).
 - `examples/` — example Jills.
@@ -55,7 +56,8 @@ Jills follows the same rules:
 - Jev may only fill inputs the Jill declares.
 - Stopping or timing out a run stops every process it started, and never signals an
   unrelated process.
-- Worktree off → Jills never commits. Nothing merges into the user's branch.
+- Worktree off → Jills never commits. Nothing merges into the user's branch unless a step declares
+  merges: true; the core verifies the result and never merges into a dirty checkout.
 - Credentials: read only from the harness's own credential API or the env var named in config;
   never log them; never read credential files.
 - `box:` (docker, openshell, ...) and remote machines are add-ons; without the add-on a

@@ -3,7 +3,7 @@
 Jills are saved agent workflows (`JILL.md`, like `SKILL.md`). Jev reads chat passively; when a
 message is a new task that fits a saved Jill it suggests it (manual) or the main agent starts it
 (auto). A Jill runs as a separate job in its own git worktree and reports back with a branch and
-logs. Nothing merges itself.
+logs. Nothing merges into your branch unless a step declares `merges: true` (see [Merging](#merging)).
 
 Light like Pi: a tiny core and single-file plug-ins behind small versioned interfaces.
 
@@ -18,7 +18,7 @@ Needs Node 22+, pnpm and git 2.38+ (for `git merge-tree --write-tree`).
 cd personal/jills
 pnpm install && pnpm build
 ln -sf "$PWD/dist/src/cli.js" ~/.local/bin/jills     # or: pnpm link --global
-mkdir -p ~/.jills/jills && cp -r examples/* ~/.jills/jills/
+mkdir -p ~/.jills/jills ~/.jills/agents && cp -r examples/* ~/.jills/jills/ && cp examples/agents/*.md ~/.jills/agents/
 jills check
 jills try hello --dry-run
 ```
@@ -90,13 +90,15 @@ steps:
 ```
 
 Step fields: exactly one of `agent: <name>`, `run: <shell>`, `jill: <name>`; plus `task`, `needs`,
-`copies` (1–16 parallel copies), `writes`, `model`, `timeout`, `inputs` (for nested Jills).
+`copies` (1–16 parallel copies), `writes`, `model`, `timeout`, `inputs` (for nested Jills),
+`on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)).
 Unknown fields pass through to plug-ins.
 
-Templates: `{{inputs.x}}`, `{{task}}`, `{{copy}}`, `{{run_id}}`, `{{steps.<name>.output}}`.
+Templates: `{{inputs.x}}`, `{{task}}`, `{{copy}}`, `{{run_id}}`, `{{steps.<name>.output}}`,
+`{{round}}`, `{{feedback}}`.
 In `run:` commands no value is ever pasted into the shell text: each placeholder becomes an env
 var reference (`"${JILLS_INPUT_X}"`, `"${JILLS_TASK}"`, `"${JILLS_COPY}"`,
-`"${JILLS_STEP_OUT_<NAME>}"`), quoted to fit where it sits, so placeholders work outside quotes,
+`"${JILLS_STEP_OUT_<NAME>}"`, `"${JILLS_ROUND}"`, `"${JILLS_FEEDBACK}"`), quoted to fit where it sits, so placeholders work outside quotes,
 inside `"double"` or `'single'` quotes and inside `$( )`, and inputs, chat text or agent output
 cannot inject commands. Placeholders inside backticks are refused (use `$( )`). Steps also get env
 vars `JILLS_RUN_ID`, `JILLS_STEP`, `JILLS_WORKSPACE`, `JILLS_COPY`, `JILLS_INPUT_<NAME>`.
@@ -136,10 +138,67 @@ body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier
 - Writers that can run at the same time get child worktrees branched from the run branch, merged
   back with `git merge-tree --write-tree` + `commit-tree` + compare-and-swap `update-ref`. A conflict
   sets the run to `needs-you`, lists the files and leaves the run branch untouched.
-- Jills never merges into your branch. Worktrees are kept until you delete them.
+- Jills never merges into your branch unless a step declares `merges: true` ([Merging](#merging)).
+  Worktrees are kept until you delete them.
 - `worktree: false` runs in the repo folder itself and never commits (no worktree: edits your checkout
   directly; `jills check` warns and suggestions say so).
 - Run states: `queued`, `running`, `done`, `failed`, `stuck`, `needs-you`.
+
+### Loops
+
+A step can send work back to an earlier step when it fails (a back-arrow):
+
+```yaml
+review:
+  agent: harness-reviewer
+  needs: [build]
+  verdict: true                              # fail unless the last VERDICT: line says clean
+  on_fail: { back_to: build, max_rounds: 3 } # max_rounds: default 3, at most 10
+```
+
+- On a real failure of `review` (non-zero exit or a failed check), the runner reruns `build` and
+  every step that needs it, directly or not, inside the same Jill (nested Jills loop inside their
+  own steps). After `max_rounds` rounds in all the run ends `needs-you` ("review failed 3 rounds").
+- `back_to` must name a step the failing step needs, directly or not; anything else is a parse error.
+- Rerun steps get `{{round}}` (1-based) and `{{feedback}}`: the last 8,000 characters of the failed
+  step's output (empty in round 1).
+- Every round stays in the run record: `build`, `build@2`, `build@3`, ... (`jills status` lists
+  them, each with its log).
+- Timeouts, `jills stop` and a stopped run never loop; they end the run as before. A step without
+  `on_fail` still stops the run at its first failure.
+- `verdict: true` (built-in `verdict` check, runs for every step): the step fails unless the last
+  line containing `VERDICT:` in its output says `VERDICT: clean` (case-insensitive; a missing line
+  fails). Tell the reviewer to end with that line.
+
+### Merging
+
+Only a step with `merges: true` may merge, and only in a Jill with `worktree: true` (parse error
+otherwise). `jills check` notes such a step; the Pi and dsh suggestion says "merges into <branch>
+when done". The run records the branch your checkout was on when the run started (`base` in the run
+record). Example: [`examples/fix-jill-bug`](examples/fix-jill-bug/JILL.md) with the
+[`squash-merge`](examples/agents/squash-merge.md) agent.
+
+- Before the step runs, Jills commits pending worktree changes, then checks your checkout. When it
+  has uncommitted changes to tracked files, or is on another branch, the step does not run and the
+  run ends `needs-you` ("your checkout ... has uncommitted changes" / "is on another branch"). That
+  is not a step failure: no back-arrow.
+- Only this step gets `JILLS_BASE_REPO` (your checkout), `JILLS_BASE_BRANCH` (the branch the run
+  started from) and `JILLS_RUN_BRANCH`. No other step sees them.
+- The procedure the step should follow (the `squash-merge` agent does exactly this):
+
+  ```bash
+  git merge --no-edit "$JILLS_BASE_BRANCH"     # in the run worktree: bring in new base commits,
+                                               # resolve conflicts, commit
+  cd "$JILLS_BASE_REPO"
+  git merge --squash "$JILLS_RUN_BRANCH" && git commit -m "<one-line subject>"
+  ```
+
+- Afterwards the core checks the result itself; it never trusts the agent. The merge counts only
+  when `JILLS_BASE_BRANCH` gained exactly one new commit on top of its old tip whose tree equals the
+  run branch's tree (a squash), or when there was nothing to merge (trees already equal).
+- The step fails and may take its back-arrow only while your branch is untouched (non-zero exit,
+  or nothing merged). If your branch changed in any other way (two commits, a different tree, a
+  failure after committing), the run ends `failed` with no loop: check your branch by hand.
 - Records: `$JILLS_HOME/runs/<id>.json` (atomic writes) and per-step logs in `$JILLS_HOME/runs/<id>/`.
 - No background service: `jills start` spawns a detached runner process and exits.
 
@@ -193,8 +252,8 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 // runner: the first whose canRun(step) is true runs the step; describe() serves dry runs and `jills check`.
 { slot: "runner", canRun(step): boolean; describe(ctx): string; run(ctx: StepRunContext): Promise<StepRunResult>; check?(config): { errors; warnings } }
 // isolation: picked by `box: <name>` (default "worktree"); child/mergeBack serve parallel writers.
-{ slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg) }
-// check: named in a step's `checks: [...]` (exit-code always runs first).
+{ slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg); facts?(dir, rev): Promise<GitFacts> /* needed by merges: true */ }
+// check: named in a step's `checks: [...]` (exit-code, then verdict, always run first).
 { slot: "check", check({ step, result, logPath }): Promise<{ ok: boolean; reason?: string }> }
 // hook: sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you); errors are ignored.
 { slot: "hook", on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void> }
@@ -204,7 +263,7 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 ```
 
 Built-ins: matcher `jev` then `keywords`; runner `command` and `agent`; isolation `worktree`;
-check `exit-code`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
+check `exit-code` and `verdict`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
 finished run's one-line result to a file:
 
 ```yaml

@@ -5,6 +5,9 @@ export interface TemplateVars {
   run_id?: string;
   /** step name -> { output } */
   steps?: Record<string, { output: string }>;
+  /** Back-arrow loops: this step's 1-based round and the failed step's output tail ("" in round 1). */
+  round?: number;
+  feedback?: string;
 }
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/y;
@@ -16,14 +19,13 @@ function resolveKey(vars: TemplateVars, key: string): { value?: string; env: str
   if (head === "inputs" && name && !tail) return { value: vars.inputs[name], env: `JILLS_INPUT_${up(name)}` };
   if (head === "steps" && name && tail === "output" && !more) return { value: vars.steps?.[name]?.output, env: `JILLS_STEP_OUT_${up(name)}` };
   if (key === "task") return { value: vars.task ?? vars.inputs.task, env: "JILLS_TASK" };
-  if (key === "copy") return { value: vars.copy?.toString(), env: "JILLS_COPY" };
-  if (key === "run_id") return { value: vars.run_id, env: "JILLS_RUN_ID" };
+  if (key === "copy" || key === "run_id" || key === "round" || key === "feedback") return { value: vars[key]?.toString(), env: `JILLS_${up(key)}` };
   return { env: `JILLS_VAR_${up(key)}` };
 }
 
 /**
- * Replace {{inputs.x}}, {{task}}, {{copy}}, {{run_id}}, {{steps.<name>.output}}
- * with their plain values. Use this for text that never reaches a shell
+ * Replace {{inputs.x}}, {{task}}, {{copy}}, {{run_id}}, {{round}}, {{feedback}},
+ * {{steps.<name>.output}} with their plain values. Use this for text that never reaches a shell
  * (agent tasks, nested Jill inputs). Unknown names expand to "".
  */
 export function renderTemplate(tpl: string, vars: TemplateVars): string {

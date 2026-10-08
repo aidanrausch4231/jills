@@ -8,6 +8,7 @@ export type StepState = "pending" | "running" | "done" | "failed" | "stuck" | "n
 
 export const TERMINAL: ReadonlySet<RunState> = new Set(["done", "failed", "stuck", "needs-you"]);
 
+/** One step instance; key = `<nested prefix/><step>[#copy][@round]` (round 2+ of a back-arrow loop). */
 export interface StepRecord {
   key: string;
   step: string;
@@ -20,28 +21,19 @@ export interface StepRecord {
   exitCode?: number | null;
   reason?: string;
   log?: string;
+  /** Where it ran: workspace folder, git branch, and the commit Jills made for it. */
   workspace?: string;
   branch?: string;
   commit?: string;
 }
 
-export interface RunEvent {
-  at: string;
-  type: "started" | "step-started" | "step-done" | "finished" | "failed" | "stuck" | "needs-you";
-  step?: string;
-  note?: string;
-}
+export type RunEvent = { at: string; type: "started" | "step-started" | "step-done" | "finished" | "failed" | "stuck" | "needs-you"; step?: string; note?: string };
 
 /**
  * Written by the runner every few seconds to its own file, which no observer
  * writes. mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot).
  */
-export interface Heartbeat {
-  at: string;
-  mono: string;
-  since: string;
-  bootId?: string;
-}
+export type Heartbeat = { at: string; mono: string; since: string; bootId?: string };
 
 export interface RunRecord {
   version: 1;
@@ -56,6 +48,8 @@ export interface RunRecord {
   repo: string;
   workspace?: string;
   branch?: string;
+  /** The branch the run started from (worktree runs); a `merges: true` step merges into it. */
+  base?: string;
   isolated?: boolean;
   session?: string;
   /** The runner process (it has JILLS_RUN_ID=<id> in its env when started detached). */

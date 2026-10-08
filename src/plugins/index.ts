@@ -3,6 +3,7 @@ import type { JillsConfig } from "../config.js";
 import agentRunner from "./runner-agent.js";
 import commandRunner from "./runner-command.js";
 import exitCodeCheck from "./check-exit-code.js";
+import verdictCheck from "./check-verdict.js";
 import jevMatcher from "./matcher-jev.js";
 import keywordsMatcher from "./matcher-keywords.js";
 import worktreeIsolation from "./isolation-worktree.js";
@@ -27,7 +28,7 @@ export function builtinPlugins(): PluginSet {
     matchers: [jevMatcher, keywordsMatcher],
     runners: [commandRunner, agentRunner],
     isolation: new Map([[worktreeIsolation.name, worktreeIsolation]]),
-    checks: new Map([[exitCodeCheck.name, exitCodeCheck]]),
+    checks: new Map([exitCodeCheck, verdictCheck].map((c) => [c.name, c])),
     hooks: [],
     suggest: defaultSuggest,
   };

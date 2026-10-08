@@ -34,7 +34,6 @@ export interface MatcherPlugin {
   /** Return undefined to let the next matcher (fallback) answer. */
   match(input: MatchInput): Promise<MatchResult | undefined>;
 }
-
 // ---- runner ----
 export interface StepRunContext {
   runId: string;
@@ -62,16 +61,17 @@ export interface RunnerPlugin {
   /** Optional extra `jills check` findings (missing paths, duplicate names). */
   check?(config: JillsConfig): { errors: string[]; warnings: string[] };
 }
-
 // ---- isolation ----
+/** `dir`: folder steps run in; `branch`: git branch checked out there; `base`: branch the outermost run started from. */
 export interface Workspace {
-  /** Folder steps run in. */
   dir: string;
-  /** Git branch checked out there (when git is used). */
   branch?: string;
   repo?: string;
+  base?: string;
   isolated: boolean;
 }
+/** A git revision as `merges: true` steps see it: the checkout's branch and dirty flag, the commit, its parents and tree. */
+export type GitFacts = { branch?: string; dirty: boolean; commit: string; parents: string[]; tree: string };
 export type MergeResult = { ok: true; commit: string } | { ok: false; conflicts: string[]; message: string };
 export interface IsolationPlugin {
   slot: "isolation";
@@ -85,8 +85,9 @@ export interface IsolationPlugin {
   mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult>;
   /** Commit the workspace's changes; returns the commit or undefined when clean. */
   commit(ws: Workspace, message: string): Promise<string | undefined>;
+  /** Optional, needed for `merges: true` steps: facts about `rev` in the checkout at `dir`. */
+  facts?(dir: string, rev: string): Promise<GitFacts>;
 }
-
 // ---- check ----
 export type CheckInput = { step: StepDef; result: StepRunResult; logPath: string };
 export type CheckResult = { ok: boolean; reason?: string };
@@ -96,7 +97,6 @@ export interface CheckPlugin {
   name: string;
   check(input: CheckInput): Promise<CheckResult>;
 }
-
 // ---- hook ----
 /** Sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you). Errors are ignored. */
 export interface HookPlugin {
@@ -105,7 +105,6 @@ export interface HookPlugin {
   name: string;
   on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void>;
 }
-
 // ---- suggest ----
 /** What Jev tells the chat about one message. */
 export interface Suggestion {
@@ -119,17 +118,17 @@ export interface Suggestion {
   matcher?: string;
   /** Global auto switch: when true the main agent should start the Jill itself. */
   auto: boolean;
-  /** Text to show the user, and text for the main agent's context. */
+  /** `text` for the user, `agentContext` for the main agent. */
   text?: string;
   agentContext?: string;
-  /** Whether the suggested Jill runs in its own worktree, and a short warning when not. */
+  /** Whether the suggested Jill runs in its own worktree; a short warning (no worktree, merges into a branch). */
   worktree?: boolean;
   warning?: string;
 }
 /** `recent`: up to the last 3 turns before the message; `repo`: the chat's git root, when known. */
 export type SuggestInput = { session: string; message: string; recent: Turn[]; repo?: string };
 export interface SuggestCtx {
-  jills: (JillSummary & { worktree: boolean })[];
+  jills: (JillSummary & { worktree: boolean; merges?: boolean })[];
   config: JillsConfig;
   /** Asks the matcher plug-ins in order; core keeps only inputs the named Jill declares. */
   match(input: MatchInput): Promise<MatchResult | undefined>;

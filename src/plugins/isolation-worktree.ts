@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { IsolationPlugin, MergeResult, Workspace } from "./types.js";
+import type { GitFacts, IsolationPlugin, MergeResult, Workspace } from "./types.js";
 
 const IDENTITY = { GIT_AUTHOR_NAME: "Jills", GIT_AUTHOR_EMAIL: "jills@localhost", GIT_COMMITTER_NAME: "Jills", GIT_COMMITTER_EMAIL: "jills@localhost" };
 
@@ -41,7 +41,7 @@ function safe(s: string): string {
  * $JILLS_HOME/worktrees/. Parallel writers get child worktrees branched from the
  * parent branch; merge-back uses merge-tree --write-tree + commit-tree + a CAS
  * update-ref, so a conflict never touches the parent. Never merges into the
- * user's branch. Worktrees are kept.
+ * user's branch itself (a `merges: true` step does, checked by core via facts()). Worktrees are kept.
  */
 const worktreeIsolation: IsolationPlugin = {
   slot: "isolation",
@@ -57,8 +57,9 @@ const worktreeIsolation: IsolationPlugin = {
     const branch = `jills/${safe(jill)}-${runId}`;
     const dir = join(config.home, "worktrees", `${safe(jill)}-${runId}`);
     mkdirSync(join(config.home, "worktrees"), { recursive: true });
+    const base = (await facts(root, "HEAD")).branch;
     await git(root, ["worktree", "add", "-b", branch, dir, "HEAD"]);
-    return { dir, branch, repo: root, isolated: true };
+    return { dir, branch, repo: root, base, isolated: true };
   },
 
   async child(parent, { key, runId, config }) {
@@ -71,7 +72,15 @@ const worktreeIsolation: IsolationPlugin = {
 
   mergeBack: (parent, child, message) => locked(parent.dir, () => mergeBack(parent, child, message)),
   commit: (ws, message) => locked(ws.dir, () => commit(ws, message)),
+  facts,
 };
+
+/** Branch and dirty flag of the checkout at `dir`; commit, parents and tree of `rev` (for merges: true steps). */
+async function facts(dir: string, rev: string): Promise<GitFacts> {
+  const [sym, dirty, line] = await Promise.all([gitRaw(dir, ["symbolic-ref", "--short", "-q", "HEAD"]), git(dir, ["status", "--porcelain", "--untracked-files=no"]), git(dir, ["log", "-1", "--format=%H %T %P", rev])]);
+  const [commit, tree, ...parents] = line.split(" ");
+  return { branch: sym.code === 0 ? sym.stdout.trim() : undefined, dirty: dirty !== "", commit: commit!, tree: tree!, parents };
+}
 
 async function mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult> {
   if (!parent.branch || !child.branch || !parent.repo) throw new Error("merge-back needs git workspaces");
