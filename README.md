@@ -28,7 +28,8 @@ Set `JILLS_HOME` to use another home folder (tests always use a temp one).
 ### Per harness
 
 - **MCP (any harness)**: register `jills mcp` as a stdio MCP server. Tools: `list_jills`,
-  `suggest_jill`, `start_jill`, `jill_status`, `wait_for_jill`.
+  `suggest_jill`, `start_jill`, `jill_status`, `wait_for_jill`. The server is the `addons/mcp/`
+  add-on; the CLI loads it only for `jills mcp`.
   - Pi: run `pi mcp add jills -- node /abs/path/personal/jills/dist/src/cli.js mcp`, or add this
     to the global `~/.pi/agent/mcp.json` (a project `.pi/mcp.json` applies only in trusted projects):
     `{"mcpServers": {"jills": {"command": "node", "args": ["/abs/path/personal/jills/dist/src/cli.js", "mcp"]}}}`
@@ -112,16 +113,19 @@ body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier
 - `jill:` steps run inline in the same run and worktree. No self or indirect recursion; depth ≤ 4.
 - Only the runner (the process that spawned the steps) signals them: per-step and total timeouts
   stop the step's process group (SIGTERM, then SIGKILL after a grace) and the run becomes `stuck`.
+  Once a step's leader exits and is reaped, its pid (the group id) may be reused, so the runner
+  signals that group only while a member (`/proc/<pid>/stat` pgrp) still carries `JILLS_RUN_ID=<run>`.
   Every run has a total limit: the Jill's `timeout`, else config `default_timeout`, else 2h. A value
   of 0 or less falls through to the next one; values above 2^31-1 ms (about 24.8 days) are clamped.
 - Observers (`jills status`, `jills wait`, the Pi and dsh watchers) never signal anything. The
-  runner writes a heartbeat every 5 s: wall time, `process.hrtime.bigint()` (one monotonic clock
+  runner writes a heartbeat every 5 s to its own file (`runs/<id>/heartbeat.json`, which no
+  observer writes): wall time, `process.hrtime.bigint()` (one monotonic clock
   for every process on a boot; it does not advance during suspend) and the boot id. An observer marks
   a running record `stuck` when the runner is gone (its pid no longer exists, or another boot), or
   when the wall-clock deadline has passed and either the runner's own monotonic time is past the
   limit or its stamp stopped advancing on the observer's own clock. A suspend or clock jump alone
-  never makes a live run stuck. A heartbeat never overwrites a terminal record; a runner that finds
-  its record marked stuck stops its own steps.
+  never makes a live run stuck. A heartbeat never writes the run record; on each beat the runner
+  reads the record, and when an observer marked it stuck it stops its own steps and keeps that mark.
 - `jills stop <run>` stops a run's processes: the runner and every step process carry
   `JILLS_RUN_ID=<run>` in their environment. Stop scans `/proc/*/environ` for that tag (same boot
   only, by boot id), sends SIGTERM, then SIGKILL to what is still tagged. Nothing else is signaled.

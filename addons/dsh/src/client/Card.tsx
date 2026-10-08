@@ -139,6 +139,8 @@ export const CSS = `
 .jills-status[data-state='done'] { color: var(--dsw-alias-state-success-primary, #3a3); }
 .jills-status[data-state='failed'], .jills-status[data-state='stuck'] { color: var(--dsw-alias-state-error-primary, #d33); }
 .jills-status[data-state='needs-you'] { color: var(--dsw-alias-state-warn-primary, #d90); }
+/* Light theme: dsh's amber-500 is ~2.1:1 on white; amber-700 #b45309 is ~5:1 (WCAG AA for 12px text). */
+body:not([data-ds-dark-theme]) .jills-warn, body:not([data-ds-dark-theme]) .jills-status[data-state='needs-you'] { color: #b45309; }
 .jills-status { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 .jills-note { margin: 4px 0 10px; color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
 .jills-note[data-kind='error'] { color: var(--dsw-alias-state-error-primary, #d33); }

@@ -10,26 +10,37 @@ export function bootId(): string | undefined {
   }
 }
 
-/** Pids whose environment holds JILLS_RUN_ID=<runId> (the runner, its steps and their children). */
-export function taggedPids(runId: string): number[] {
+/** process.kill without throwing. With sig 0 it only probes: true while the pid exists (EPERM counts). */
+export function signal(pid: number, sig: NodeJS.Signals | 0): boolean {
+  try {
+    return process.kill(pid, sig);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Pids whose environment holds JILLS_RUN_ID=<runId> (the runner, its steps and
+ * their children); with `pgrp`, only members of that process group (/proc/<pid>/stat).
+ */
+export function taggedPids(runId: string, pgrp?: number): number[] {
   const tag = `JILLS_RUN_ID=${runId}`;
-  const out: number[] = [];
   let entries: string[] = [];
   try {
     entries = readdirSync("/proc");
   } catch {
-    return out;
+    return [];
   }
-  for (const e of entries) {
-    const pid = Number(e);
-    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+  return entries.map(Number).filter((pid) => {
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
     try {
-      if (readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(tag)) out.push(pid);
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); // "pid (comm) state ppid pgrp ..."
+      if (pgrp !== undefined && Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]) !== pgrp) return false;
+      return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(tag);
     } catch {
-      /* gone or not ours */
+      return false; // gone or not ours
     }
-  }
-  return out;
+  });
 }
 
 /**
@@ -44,12 +55,4 @@ export async function stopTagged(runId: string, recordedBoot: string | undefined
   for (let t = 0; t < graceMs && taggedPids(runId).length; t += 100) await sleep(100);
   for (const pid of taggedPids(runId)) signal(pid, "SIGKILL"); // re-scanned: a recycled pid is not tagged
   return hit;
-}
-
-function signal(pid: number, sig: NodeJS.Signals) {
-  try {
-    process.kill(pid, sig);
-  } catch {
-    /* already gone */
-  }
 }

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { signal, taggedPids } from "../proc.js";
 import type { RunnerPlugin, StepRunResult } from "./types.js";
 
 export interface SpawnOpts {
@@ -13,17 +14,11 @@ export interface SpawnOpts {
   signal?: AbortSignal;
 }
 
-function killGroup(pid: number, sig: NodeJS.Signals) {
-  try {
-    process.kill(-pid, sig);
-  } catch {
-    /* already gone */
-  }
-}
-
 /**
  * Run a process in its own process group, output to logPath. Only the runner
  * calls this: on timeout or abort it stops the group it spawned (SIGTERM, then SIGKILL).
+ * Once the leader is reaped its pid (= the group id) may be reused, so the group
+ * is then signaled only while a member still carries this run's JILLS_RUN_ID.
  */
 export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
   mkdirSync(dirname(o.logPath), { recursive: true });
@@ -32,12 +27,16 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const runId = o.env?.JILLS_RUN_ID;
     const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ["ignore", fd, fd], detached: true });
     const pid = child.pid;
+    const killGroup = (sig: NodeJS.Signals) => {
+      if (pid && (!settled || (runId && taggedPids(runId, pid).length))) signal(-pid, sig);
+    };
     const stop = () => {
-      if (!pid) return;
-      killGroup(pid, "SIGTERM");
-      setTimeout(() => killGroup(pid, "SIGKILL"), 2000).unref();
+      killGroup("SIGTERM");
+      killTimer ??= setTimeout(() => killGroup("SIGKILL"), 2000).unref();
     };
     const onAbort = () => {
       aborted = true;
@@ -50,8 +49,9 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
       o.signal?.removeEventListener("abort", onAbort);
-      if ((timedOut || aborted) && pid) killGroup(pid, "SIGKILL"); // no grandchild survives
+      if (timedOut || aborted) killGroup("SIGKILL"); // no tagged grandchild survives the reaped leader
       closeSync(fd);
       resolve(r);
     };

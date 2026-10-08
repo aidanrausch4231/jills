@@ -13,19 +13,9 @@ export const EXIT = { ok: 0, error: 1, usage: 2, noSuggestion: 3, failed: 4, stu
 
 class UsageError extends Error {}
 
-const OPTIONS = {
-  json: { type: "boolean" },
-  "dry-run": { type: "boolean" },
-  wait: { type: "boolean" },
-  unmute: { type: "boolean" },
-  help: { type: "boolean", short: "h" },
-  input: { type: "string", multiple: true },
-  session: { type: "string" },
-  repo: { type: "string" },
-  jill: { type: "string" },
-  timeout: { type: "string" },
-  message: { type: "string" },
-} as const;
+const flag = { type: "boolean" } as const;
+const str = { type: "string" } as const;
+const OPTIONS = { json: flag, "dry-run": flag, wait: flag, unmute: flag, help: { ...flag, short: "h" }, input: { ...str, multiple: true }, session: str, repo: str, jill: str, timeout: str, message: str } as const;
 const parse = (args: string[]) => parseArgs({ args, options: OPTIONS, allowPositionals: true });
 type Flags = ReturnType<typeof parse>["values"];
 
@@ -61,13 +51,11 @@ function printRecord(r: RunRecord): void {
 }
 
 const inputs = (f: Flags) =>
-  Object.fromEntries(
-    (f.input ?? []).map((kv) => {
-      const eq = kv.indexOf("=");
-      if (eq <= 0) throw new UsageError(`--input wants name=value, got "${kv}"`);
-      return [kv.slice(0, eq), kv.slice(eq + 1)];
-    }),
-  );
+  Object.fromEntries((f.input ?? []).map((kv) => {
+    const [k, ...v] = kv.split("=");
+    if (!k || !v.length) throw new UsageError(`--input wants name=value, got "${kv}"`);
+    return [k, v.join("=")];
+  }));
 const session = (f: Flags) => need(f.session, "--session <id>");
 
 /** Start a run (start/go); with --wait block until it ends. */
@@ -155,7 +143,7 @@ const COMMANDS: Record<string, Command> = {
     return v === undefined || v === "on" || v === "off" ? EXIT.ok : EXIT.usage;
   }],
   new: ["new <name>                             scaffold a JILL.md", async (rest) => print(newJill(need(rest[0], "<name>")))],
-  mcp: ["mcp                                    MCP server on stdio", async () => (await (await import("./mcp.js")).serveStdio(), -1)], // -1: keep running
+  mcp: ["mcp                                    MCP server on stdio", async () => (await (await import("../addons/mcp/mcp.js")).serveStdio(), -1)], // -1: keep running
 };
 
 const USAGE = `jills — saved agent workflows that Jev suggests from chat
@@ -207,12 +195,13 @@ export async function main(argv: string[]): Promise<number> {
   return c[1](rest, f, (v, text) => console.log(f.json ? JSON.stringify(v, null, 2) : text()));
 }
 
-let isMain = false;
-try {
-  isMain = import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? "")).href;
-} catch {
-  /* not started as a script */
-}
+const isMain = (() => {
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? "")).href;
+  } catch {
+    return false; // not started as a script
+  }
+})();
 
 if (isMain)
   main(process.argv.slice(2))

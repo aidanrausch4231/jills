@@ -7,10 +7,10 @@ import { afterEach, test } from "node:test";
 import { go, chat, runNow, start, stop, suggest, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
 import { parseJevReply, setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
-import { loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
+import { heartbeatPath, loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
 import { loadSession } from "../src/plugins/suggest-default.js";
 import { bootId } from "../src/proc.js";
-import { sleep } from "../src/util.js";
+import { sleep, writeJsonAtomic } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
 const root = new URL("../../", import.meta.url).pathname;
@@ -148,7 +148,6 @@ test("jills wait reports stuck when a hung runner passes its deadline (no hang f
     started: past,
     repo: tmp(),
     pid: runner.pid,
-    heartbeat: { at: past, mono: stamp, since: stamp, bootId: bootId() },
     logDir: join(home, "runs", "hung-1"),
     steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running" } },
     events: [],
@@ -156,6 +155,7 @@ test("jills wait reports stuck when a hung runner passes its deadline (no hang f
     deadline: new Date(Date.now() - 2 * 60_000).toISOString(),
   };
   saveRecord(home, rec);
+  writeJsonAtomic(heartbeatPath(home, "hung-1"), { at: past, mono: stamp, since: stamp, bootId: bootId() });
   const w = await wait("hung-1", { home, timeoutMs: 10_000, pollMs: 50 });
   assert.equal(w.timedOut, false, "wait must not hang");
   assert.equal(w.record.state, "stuck");

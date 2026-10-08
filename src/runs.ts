@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { bootId } from "./proc.js";
-import { readJson, sleep, writeJsonAtomic } from "./util.js";
+import { bootId, signal } from "./proc.js";
+import { readJson, writeJsonAtomic } from "./util.js";
 
 export type RunState = "queued" | "running" | "done" | "failed" | "stuck" | "needs-you";
 export type StepState = "pending" | "running" | "done" | "failed" | "stuck" | "needs-you" | "skipped";
@@ -32,7 +32,10 @@ export interface RunEvent {
   note?: string;
 }
 
-/** Written by the runner every few seconds. mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot). */
+/**
+ * Written by the runner every few seconds to its own file, which no observer
+ * writes. mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot).
+ */
 export interface Heartbeat {
   at: string;
   mono: string;
@@ -57,7 +60,6 @@ export interface RunRecord {
   session?: string;
   /** The runner process (it has JILLS_RUN_ID=<id> in its env when started detached). */
   pid?: number;
-  heartbeat?: Heartbeat;
   logDir: string;
   steps: Record<string, StepRecord>;
   events: RunEvent[];
@@ -73,6 +75,8 @@ export interface RunRecord {
 export const runsDir = (home: string) => join(home, "runs");
 export const recordPath = (home: string, id: string) => join(runsDir(home), `${id}.json`);
 export const runLogDir = (home: string, id: string) => join(runsDir(home), id);
+export const heartbeatPath = (home: string, id: string) => join(runLogDir(home, id), "heartbeat.json");
+export const loadHeartbeat = (home: string, id: string) => readJson<Heartbeat>(heartbeatPath(home, id));
 
 export function saveRecord(home: string, r: RunRecord): void {
   writeJsonAtomic(recordPath(home, r.id), r);
@@ -96,16 +100,6 @@ export const DEADLINE_GRACE_MS = 30_000;
 /** A heartbeat whose monotonic stamp is this old (on the observer's clock) means the runner hangs. */
 export const STALE_MS = 30_000;
 
-function pidAlive(pid: number | undefined): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 /**
  * Why an observer should call this running record stuck, or undefined. Stateless:
  * - the runner is gone (another boot, or its pid no longer exists);
@@ -113,10 +107,9 @@ function pidAlive(pid: number | undefined): boolean {
  *   the limit, or its stamp stopped advancing on this observer's monotonic clock.
  * A suspend moves wall time but not the monotonic clock, so it alone never decides it.
  */
-export function stuckReason(r: RunRecord, staleMs = STALE_MS): string | undefined {
-  const hb = r.heartbeat;
+export function stuckReason(r: RunRecord, hb: Heartbeat | undefined, staleMs = STALE_MS): string | undefined {
   const sameBoot = !hb?.bootId || hb.bootId === bootId();
-  if (!sameBoot || (r.pid !== undefined && !pidAlive(r.pid))) return "the runner process is gone";
+  if (!sameBoot || (r.pid !== undefined && !(r.pid > 0 && signal(r.pid, 0)))) return "the runner process is gone";
   if (!r.deadline || Date.now() <= Date.parse(r.deadline) + DEADLINE_GRACE_MS) return undefined;
   if (!hb?.mono || !hb.since) return `total time limit ${r.timeLimit ?? "?"} passed and the runner never beat`;
   const ns = (ms: number) => BigInt(Math.round(ms)) * 1_000_000n;
@@ -150,33 +143,8 @@ export function refreshRecord(home: string, id: string, staleMs?: number): RunRe
   const r = loadRecord(home, id);
   if (!r || TERMINAL.has(r.state)) return r;
   if (r.state === "queued") return Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS ? r : markTerminal(home, r, "failed", "runner never started");
-  const why = stuckReason(r, staleMs);
+  const why = stuckReason(r, loadHeartbeat(home, id), staleMs);
   return why ? markTerminal(home, r, "stuck", `${why}; run \`jills stop ${r.id}\` to stop its processes`, why) : r;
-}
-
-export interface WaitOpts {
-  timeoutMs?: number;
-  pollMs?: number;
-  /** Observer-clock age of a heartbeat stamp that counts as stopped (default STALE_MS). */
-  staleMs?: number;
-  onUpdate?: (r: RunRecord) => void;
-}
-
-/** Block until the run reaches a terminal state (or timeoutMs passes). */
-export async function waitForRun(home: string, id: string, o: WaitOpts = {}): Promise<{ record: RunRecord; timedOut: boolean }> {
-  const t0 = Date.now();
-  let lastEvents = -1;
-  for (;;) {
-    const r = refreshRecord(home, id, o.staleMs);
-    if (!r) throw new Error(`no run ${id}`);
-    if (r.events.length !== lastEvents) {
-      lastEvents = r.events.length;
-      o.onUpdate?.(r);
-    }
-    if (TERMINAL.has(r.state)) return { record: r, timedOut: false };
-    if (o.timeoutMs !== undefined && Date.now() - t0 >= o.timeoutMs) return { record: r, timedOut: true };
-    await sleep(o.pollMs ?? 250);
-  }
 }
 
 /** One-line result, e.g. for `jills wait`. */

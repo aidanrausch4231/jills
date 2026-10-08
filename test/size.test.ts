@@ -10,21 +10,11 @@ const lines = (f: string) => (readFileSync(f, "utf8").match(/\n/g) ?? []).length
 const tsFiles = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? tsFiles(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
 
-/** Core line count after the loop-3 cuts; lower it as core shrinks. */
-const CEILING = 1623;
-
 const coreFiles = () => tsFiles(join(root, "src")).filter((f) => !relative(root, f).startsWith("src/plugins/"));
 const core = () => coreFiles().reduce((n, f) => n + lines(f), 0);
 const coreReport = () => `core is ${core()} lines: ${coreFiles().map((f) => `${relative(root, f)} ${lines(f)}`).join(", ")}`;
 
-// Ratchet: core may only shrink. Set to the count after the loop-3 cuts while the
-// lead decides between the 1,500 budget and a revised one.
-test("core (src/**/*.ts without src/plugins/) never grows past the current ceiling", () => {
-  assert.ok(core() <= CEILING, coreReport());
-});
-
-// Budget from AGENTS.md. It reports as TODO while core is above it (lead decision pending).
-test("core is at most 1,500 lines", { todo: core() > 1500 ? `lead decision pending; ${core()} lines` : false }, () => {
+test("core (src/**/*.ts without src/plugins/) is at most 1,500 lines", () => {
   assert.ok(core() <= 1500, coreReport());
 });
 

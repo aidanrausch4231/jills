@@ -5,9 +5,9 @@ import { MAX_DEPTH, type JillDef, type StepDef } from "./jillfile.js";
 import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { bootId } from "./proc.js";
-import { loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
+import { heartbeatPath, loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate } from "./template.js";
-import { MAX_TIMER_MS, parseLimit } from "./util.js";
+import { MAX_TIMER_MS, parseLimit, writeJsonAtomic } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
@@ -16,7 +16,7 @@ type Outputs = Record<string, { output: string }>;
 type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; depth: number; stack: string[]; prefix: string };
 
 const OUTPUT_LIMIT = 8000;
-/** How often a runner writes its heartbeat into the run record. */
+/** How often a runner writes its heartbeat file (never the run record). */
 export const HEARTBEAT_MS = 5_000;
 
 /** Steps that write and may run at the same time as another writer → child worktrees. */
@@ -40,21 +40,12 @@ export function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | 
   return out;
 }
 
-export interface StepCtx {
-  config: JillsConfig;
-  plugins: PluginSet;
-  runId: string;
-  key: string;
-  cwd: string;
-  copy?: number;
-  steps: Outputs;
-}
-
 /**
  * One step's command, shared by real and dry runs: the runner that claims it,
  * the rendered text (run: commands get env references, never values), the
  * JILLS_* env and the step timeout.
  */
+type StepCtx = { config: JillsConfig; plugins: PluginSet; runId: string; key: string; cwd: string; copy?: number; steps: Outputs };
 export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string, string>, c: StepCtx) {
   const runner: RunnerPlugin | undefined = c.plugins.runners.find((p) => p.canRun(step));
   const vars = { inputs, task: inputs.task, copy: c.copy, run_id: c.runId, steps: c.steps };
@@ -66,10 +57,7 @@ export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string,
   return { runner, text, env: { ...env, ...shell?.env }, shellEnv: shell?.env ?? {}, timeoutMs: parseLimit(step.timeout) };
 }
 
-function readOutput(path: string | undefined): string {
-  if (!path || !existsSync(path)) return "";
-  return readFileSync(path, "utf8").slice(-OUTPUT_LIMIT).trim();
-}
+const readOutput = (path?: string) => (path && existsSync(path) ? readFileSync(path, "utf8").slice(-OUTPUT_LIMIT).trim() : "");
 
 const now = () => new Date().toISOString();
 
@@ -102,17 +90,20 @@ export class RunEngine {
     private o: EngineOpts,
   ) {}
 
-  private save(): void {
-    const home = this.o.config.home;
-    if (!this.lost && !TERMINAL.has(this.written)) {
-      const disk = loadRecord(home, this.record.id);
-      if (disk && TERMINAL.has(disk.state)) {
-        this.lost = true; // an observer marked it stuck: stop our steps, keep its record
-        this.halt(disk.state as Outcome, `marked ${disk.state} by an observer: ${disk.error ?? ""}`);
-      }
+  /** True once an observer wrote a terminal state on disk: then stop our steps and keep its record. */
+  private isLost(): boolean {
+    if (this.lost || TERMINAL.has(this.written)) return this.lost;
+    const disk = loadRecord(this.o.config.home, this.record.id);
+    if (disk && TERMINAL.has(disk.state)) {
+      this.lost = true;
+      this.halt(disk.state as Outcome, `marked ${disk.state} by an observer: ${disk.error ?? ""}`);
     }
-    if (this.lost) return;
-    saveRecord(home, this.record);
+    return this.lost;
+  }
+
+  private save(): void {
+    if (this.isLost()) return;
+    saveRecord(this.o.config.home, this.record);
     this.written = this.record.state;
   }
 
@@ -141,10 +132,10 @@ export class RunEngine {
     r.pid = process.pid;
     const since = String(process.hrtime.bigint());
     const boot = bootId();
-    const beat = () => (r.heartbeat = { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
+    const beat = () => writeJsonAtomic(heartbeatPath(c.home, r.id), { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
     beat();
-    // save() re-reads the record and never overwrites a terminal one: it halts the run instead.
-    const heart = setInterval(() => (beat(), this.save()), HEARTBEAT_MS);
+    // A beat writes only its own file; it then reads the record to notice an observer's stuck mark.
+    const heart = setInterval(() => (beat(), this.isLost()), HEARTBEAT_MS);
     heart.unref();
     this.emit("started", undefined, r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
@@ -269,9 +260,7 @@ export class RunEngine {
       }
       const iso = this.isolation;
       // Git stays outside agents: Jills commits after each writing step.
-      if (iws.isolated && iso && step.writes && !step.jill) {
-        rec.commit = (await iso.commit(iws, `jills(${jill.name}): ${key}`)) ?? rec.commit;
-      }
+      if (iws.isolated && iso && step.writes && !step.jill) rec.commit = (await iso.commit(iws, `jills(${jill.name}): ${key}`)) ?? rec.commit;
       if (iws !== ws && iso) {
         const m = await iso.mergeBack(ws, iws, `jills(${jill.name}): merge ${key}`);
         if (!m.ok) {

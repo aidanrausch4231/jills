@@ -28,16 +28,12 @@ export function jillsHome(): string {
 
 export const configPath = (home = jillsHome()) => join(home, "config.yml");
 
-/** Expand $JILLS_HOME and ~/ in a config path; relative paths are relative to home. */
-export function expandPath(p: string, home: string): string {
-  let out = p.replace(/\$JILLS_HOME|\$\{JILLS_HOME\}/g, home);
-  if (out.startsWith("~/")) out = join(homedir(), out.slice(2));
-  return resolve(home, out);
-}
-
-/** A list of paths from config key `v`, expanded; `fallback` when unset. */
+/** Paths from config key `v` ($JILLS_HOME and ~/ expanded, relative to home); `fallback` when unset. */
 export function pathList(v: unknown, home: string, fallback: string[]): string[] {
-  return (Array.isArray(v) ? v.map(String) : fallback).map((p) => expandPath(p, home));
+  return (Array.isArray(v) ? v.map(String) : fallback).map((p) => {
+    const out = p.replace(/\$JILLS_HOME|\$\{JILLS_HOME\}/g, home);
+    return resolve(home, out.startsWith("~/") ? join(homedir(), out.slice(2)) : out);
+  });
 }
 
 export function loadConfig(home = jillsHome()): JillsConfig {

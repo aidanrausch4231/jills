@@ -12,5 +12,5 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": false
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "addons/mcp/**/*.ts"]
 }

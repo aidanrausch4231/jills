@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createMcpServer } from "../src/mcp.js";
-import { tmpHome, tmpRepo } from "./helpers.js";
+import { createMcpServer } from "../mcp.js";
+import { tmpHome, tmpRepo } from "../../../test/helpers.js";
 
-const root = new URL("../../", import.meta.url).pathname;
+const root = new URL("../../../../", import.meta.url).pathname;
 
 async function connect(home: string) {
   const server = createMcpServer({ home });

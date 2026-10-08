@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { listJills, start, status, suggest, wait, type BaseOpts } from "./api.js";
-import { resultLine } from "./runs.js";
+import { listJills, start, status, suggest, wait, type BaseOpts } from "../../src/api.js";
+import { resultLine } from "../../src/runs.js";
 
 const json = (v: unknown) => JSON.stringify(v, null, 2);
 const turn = z.object({ role: z.enum(["user", "assistant"]), text: z.string() });

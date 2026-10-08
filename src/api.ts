@@ -8,8 +8,8 @@ import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
-import { listRecords, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, waitForRun, type RunRecord, type WaitOpts } from "./runs.js";
-import { newId, writeFileAtomic } from "./util.js";
+import { listRecords, loadHeartbeat, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, type RunRecord } from "./runs.js";
+import { newId, sleep, writeFileAtomic } from "./util.js";
 
 export interface BaseOpts {
   /** Jills home; defaults to $JILLS_HOME or ~/.jills. */
@@ -23,10 +23,11 @@ interface Ctx {
   lookup: (name: string) => JillDef | undefined;
 }
 
-const homeOf = (o: BaseOpts) => loadConfig(o.home ?? jillsHome()).home;
+const configOf = (o: BaseOpts) => loadConfig(o.home ?? jillsHome());
+const homeOf = (o: BaseOpts) => configOf(o).home;
 
 async function context(o: BaseOpts = {}): Promise<Ctx> {
-  const config = loadConfig(o.home ?? jillsHome());
+  const config = configOf(o);
   const jills = scanJills(config.jill_paths).items;
   return { config, plugins: await loadPlugins(config), jills, lookup: (n) => jills.get(n) };
 }
@@ -37,8 +38,6 @@ const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.d
 export async function listJills(o: BaseOpts = {}): Promise<(JillSummary & { path: string })[]> {
   return [...(await context(o)).jills.values()].map((j) => ({ ...summarize(j), path: j.path }));
 }
-
-// ---------------------------------------------------------------- suggest
 
 export interface SuggestOpts extends BaseOpts {
   /** Chat session id (anti-nag state is kept per id). */
@@ -53,9 +52,8 @@ export interface SuggestOpts extends BaseOpts {
 
 /** The repo a chat works in: `repo`, else the git root of cwd (undefined outside git). */
 async function resolveRepo(repo?: string, cwd?: string): Promise<string | undefined> {
-  if (repo) return resolve(repo);
   try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: cwd ?? process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return repo ? resolve(repo) : execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: cwd ?? process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return undefined;
   }
@@ -87,8 +85,6 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   return s.jill && s.inputs ? { ...s, inputs: declaredInputs(c.lookup(s.jill), s.inputs) } : s;
 }
 
-// ---------------------------------------------------------------- start / run
-
 export interface StartOpts extends BaseOpts {
   inputs?: Record<string, string>;
   /** Repo/folder to run in; defaults to inputs.repo, then process.cwd(). */
@@ -96,25 +92,24 @@ export interface StartOpts extends BaseOpts {
   session?: string;
 }
 
-/** Look up a Jill, refuse what v1 cannot run, check nesting, fill defaults and required inputs. */
-function validate(c: Ctx, name: string, given: Record<string, string> = {}): { j: JillDef; inputs: Record<string, string> } {
+/** Look up a Jill, refuse what v1 cannot run, check nesting, fill defaults and required inputs; resolve the repo. */
+function validate(c: Ctx, name: string, o: StartOpts): { j: JillDef; inputs: Record<string, string>; repo: string } {
   const j = c.lookup(name);
   if (!j) throw new Error(`no Jill named "${name}" (jill_paths: ${c.config.jill_paths.join(", ")})`);
   const refused = refusal(j, c.plugins.isolation);
   if (refused) throw new Error(refused);
   checkNesting(j, c.lookup);
-  const inputs = { ...given };
+  const inputs = { ...o.inputs };
   for (const i of j.inputs) if (inputs[i.name] === undefined && i.default !== undefined) inputs[i.name] = i.default;
   const missing = j.inputs.filter((i) => i.required && inputs[i.name] === undefined).map((i) => i.name);
   if (missing.length) throw new Error(`Jill "${j.name}" needs input(s): ${missing.join(", ")} (use --input name=value)`);
-  return { j, inputs };
+  return { j, inputs, repo: resolve(inputs.repo ?? o.cwd ?? process.cwd()) };
 }
 
 /** Validate a start request and save the queued run record. */
 async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record: RunRecord }> {
   const c = await context(o);
-  const { j, inputs } = validate(c, name, o.inputs);
-  const repo = resolve(inputs.repo ?? o.cwd ?? process.cwd());
+  const { j, inputs, repo } = validate(c, name, o);
   if (!existsSync(repo)) throw new Error(`repo folder ${repo} does not exist`);
   const id = newId();
   const created = new Date().toISOString();
@@ -159,16 +154,26 @@ export async function runNow(jillName: string, o: StartOpts & { onEvent?: EventL
   return new RunEngine(record, { ...c, onEvent: o.onEvent }).execute();
 }
 
-export interface WaitResult {
-  record: RunRecord;
-  timedOut: boolean;
-  line: string;
+export interface WaitOpts extends BaseOpts {
+  timeoutMs?: number;
+  pollMs?: number;
+  /** Observer-clock age of a heartbeat stamp that counts as stopped (default STALE_MS). */
+  staleMs?: number;
+  onUpdate?: (r: RunRecord) => void;
 }
 
-/** Block until a run is done/failed/stuck/needs-you; returns a one-line result. */
-export async function wait(id: string, o: BaseOpts & WaitOpts = {}): Promise<WaitResult> {
-  const { record, timedOut } = await waitForRun(homeOf(o), id, o);
-  return { record, timedOut, line: timedOut ? `jills run ${id} still ${record.state} (wait timed out)` : resultLine(record) };
+/** Block until a run is done/failed/stuck/needs-you (or timeoutMs passes); returns a one-line result. */
+export async function wait(id: string, o: WaitOpts = {}): Promise<{ record: RunRecord; timedOut: boolean; line: string }> {
+  const home = homeOf(o);
+  const t0 = Date.now();
+  for (let seen = -1; ; await sleep(o.pollMs ?? 250)) {
+    const r = refreshRecord(home, id, o.staleMs);
+    if (!r) throw new Error(`no run ${id}`);
+    if (r.events.length !== seen) o.onUpdate?.(r);
+    seen = r.events.length;
+    if (TERMINAL.has(r.state)) return { record: r, timedOut: false, line: resultLine(r) };
+    if (o.timeoutMs !== undefined && Date.now() - t0 >= o.timeoutMs) return { record: r, timedOut: true, line: `jills run ${id} still ${r.state} (wait timed out)` };
+  }
 }
 
 /** One run's record, or the recent runs when no id is given. Never signals anything. */
@@ -189,13 +194,11 @@ export async function stop(id: string, o: BaseOpts & { graceMs?: number } = {}):
   const home = homeOf(o);
   const r = loadRecord(home, id);
   if (!r) throw new Error(`no run ${id}`);
-  const pids = await stopTagged(id, r.heartbeat?.bootId, o.graceMs);
+  const pids = await stopTagged(id, loadHeartbeat(home, id)?.bootId, o.graceMs);
   const after = loadRecord(home, id) ?? r;
   if (TERMINAL.has(after.state)) return { record: after, pids };
   return { record: markTerminal(home, after, "failed", "stopped by jills stop") ?? after, pids };
 }
-
-// ---------------------------------------------------------------- chat controls
 
 /**
  * Apply a chat control (dismiss, quiet, on, last, ...) through the suggest plug-in;
@@ -241,25 +244,13 @@ export async function go(o: GoOpts): Promise<{ record: RunRecord; inputs: Record
   return { record, inputs, dropped: Object.keys(merged).filter((k) => !(k in inputs)) };
 }
 
-export const setAuto = (onOff: boolean, o: BaseOpts = {}) => setConfigValue("auto", onOff, o.home ?? jillsHome());
-
-// ---------------------------------------------------------------- check / try / new
-
-export interface CheckReport {
-  errors: string[];
-  warnings: string[];
-  jills: string[];
-}
+export const setAuto = (onOff: boolean, o: BaseOpts = {}) => setConfigValue("auto", onOff, homeOf(o));
 
 /** Validate config, Jills and their steps (each runner plug-in describes its steps). Duplicate names are warnings. */
-export async function check(o: BaseOpts = {}): Promise<CheckReport> {
+export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warnings: string[]; jills: string[] }> {
   const warnings: string[] = [];
-  let c: Ctx;
-  try {
-    c = await context(o);
-  } catch (e) {
-    return { errors: [(e as Error).message], warnings, jills: [] };
-  }
+  const c = await context(o).catch((e: Error) => e);
+  if (c instanceof Error) return { errors: [c.message], warnings, jills: [] };
   const scan = scanJills(c.config.jill_paths);
   const errors = [...scan.errors];
   for (const [n, paths] of scan.duplicates) warnings.push(`Jill "${n}" found more than once; using ${paths[0]} (also: ${paths.slice(1).join(", ")})`);
@@ -315,8 +306,7 @@ function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, j
 /** Describe what a run would do, without running anything. */
 export async function dryRun(jillName: string, o: StartOpts = {}): Promise<string[]> {
   const c = await context(o);
-  const { j, inputs } = validate(c, jillName, o.inputs);
-  const repo = resolve(inputs.repo ?? o.cwd ?? process.cwd());
+  const { j, inputs, repo } = validate(c, jillName, o);
   return [
     `Jill ${j.name}: ${j.description}`,
     j.worktree ? `workspace: new worktree on branch jills/${j.name}-<run-id> from ${repo} (under ${join(c.config.home, "worktrees")})` : `workspace: ${repo} (${NO_WORKTREE_NOTE}; no commits)`,
@@ -328,7 +318,7 @@ export async function dryRun(jillName: string, o: StartOpts = {}): Promise<strin
 /** Scaffold <first jill_path>/<name>/JILL.md from examples/JILL.template.md. Returns the file path. */
 export function newJill(name: string, o: BaseOpts = {}): string {
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) throw new Error(`bad Jill name "${name}"`);
-  const file = join(loadConfig(o.home ?? jillsHome()).jill_paths[0]!, name, "JILL.md");
+  const file = join(configOf(o).jill_paths[0]!, name, "JILL.md");
   if (existsSync(file)) throw new Error(`${file} already exists`);
   const template = readFileSync(new URL("../../examples/JILL.template.md", import.meta.url), "utf8");
   writeFileAtomic(file, template.replaceAll("__NAME__", name));

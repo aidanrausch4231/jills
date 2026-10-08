@@ -7,8 +7,8 @@ import { after, test } from "node:test";
 import { check, newJill, runNow, start, status, stop, suggest, wait } from "../src/api.js";
 import { NO_WORKTREE_NOTE, parseJill } from "../src/jillfile.js";
 import { bootId } from "../src/proc.js";
-import { listRecords, loadRecord, refreshRecord, saveRecord, type RunRecord } from "../src/runs.js";
-import { MAX_TIMER_MS, sleep } from "../src/util.js";
+import { heartbeatPath, listRecords, loadHeartbeat, loadRecord, refreshRecord, saveRecord, type Heartbeat, type RunRecord } from "../src/runs.js";
+import { MAX_TIMER_MS, sleep, writeJsonAtomic } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
 const kids: ChildProcess[] = [];
@@ -42,8 +42,10 @@ async function until(fn: () => boolean, ms = 5000): Promise<void> {
 
 const mono = (agoMs = 0) => String(process.hrtime.bigint() - BigInt(agoMs) * 1_000_000n);
 
-function record(home: string, id: string, extra: Partial<RunRecord>): RunRecord {
+/** A running record; `heartbeat` goes to the runner's own heartbeat file. */
+function record(home: string, id: string, { heartbeat, ...extra }: Partial<RunRecord> & { heartbeat?: Heartbeat }): RunRecord {
   mkdirSync(join(home, "runs"), { recursive: true });
+  if (heartbeat) writeJsonAtomic(heartbeatPath(home, id), heartbeat);
   const past = new Date(Date.now() - 10 * 60_000).toISOString();
   const r: RunRecord = {
     version: 1,
@@ -165,8 +167,10 @@ test("a real run records its runner pid and a monotonic heartbeat with the boot 
   const r = await runNow("quick", { home, cwd: tmp() });
   assert.equal(r.state, "done");
   assert.equal(r.pid, process.pid);
-  assert.ok(BigInt(r.heartbeat!.mono) >= BigInt(r.heartbeat!.since));
-  assert.equal(r.heartbeat!.bootId, bootId());
+  const hb = loadHeartbeat(home, r.id)!;
+  assert.ok(BigInt(hb.mono) >= BigInt(hb.since));
+  assert.equal(hb.bootId, bootId());
+  assert.equal("heartbeat" in r, false, "the heartbeat lives in its own file, not the record");
 });
 
 // ---------------------------------------------------------------- 2. time limits
