@@ -28,8 +28,7 @@ export function sessionFile(home: string, id: string): string {
 }
 
 export function loadSession(home: string, id: string): SessionState {
-  const s = readJson<SessionState>(sessionFile(home, id));
-  return s ?? { id, messages: 0, quiet: false, dismissed: false, waitingForNew: false, suggested: [], runs: [] };
+  return readJson<SessionState>(sessionFile(home, id)) ?? { id, messages: 0, quiet: false, dismissed: false, waitingForNew: false, suggested: [], runs: [] };
 }
 
 export function saveSession(home: string, s: SessionState): void {
@@ -44,30 +43,23 @@ export function updateSession(home: string, id: string, fn: (s: SessionState) =>
   return s;
 }
 
-// ---- per-repo mutes ("never") ----
-type MuteFile = Record<string, string[]>;
+// ---- per-repo mutes ("never"), in $JILLS_HOME/muted.json: repo -> Jill names ("*" = all) ----
+const mutes = (home: string) => readJson<Record<string, string[]>>(join(home, "muted.json")) ?? {};
+const saveMutes = (home: string, m: Record<string, string[]>) => writeJsonAtomic(join(home, "muted.json"), m);
 
-function muteFile(home: string): string {
-  return join(home, "muted.json");
-}
-
-/** Mute a Jill (or every Jill with "*") for a repo. */
 export function muteRepo(home: string, repo: string, jill = "*"): void {
-  const m = readJson<MuteFile>(muteFile(home)) ?? {};
-  const list = new Set(m[repo] ?? []);
-  list.add(jill);
-  m[repo] = [...list].sort();
-  writeJsonAtomic(muteFile(home), m);
+  const m = mutes(home);
+  m[repo] = [...new Set([...(m[repo] ?? []), jill])].sort();
+  saveMutes(home, m);
 }
 
 export function unmuteRepo(home: string, repo: string): void {
-  const m = readJson<MuteFile>(muteFile(home)) ?? {};
+  const m = mutes(home);
   delete m[repo];
-  writeJsonAtomic(muteFile(home), m);
+  saveMutes(home, m);
 }
 
 export function isMuted(home: string, repo: string | undefined, jill: string): boolean {
-  if (!repo) return false;
-  const list = (readJson<MuteFile>(muteFile(home)) ?? {})[repo] ?? [];
+  const list = repo ? (mutes(home)[repo] ?? []) : [];
   return list.includes("*") || list.includes(jill);
 }

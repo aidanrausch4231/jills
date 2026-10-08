@@ -32,6 +32,8 @@ const jillsHome = join(temp, 'jills-home')
 const repo = join(temp, 'repo')
 const title = `Jills smoke ${temp.slice(-6)}`
 const message = 'Please say hello to Aidan from the team.'
+const directTitle = `Jills direct ${temp.slice(-6)}`
+const directMessage = 'Please tidy the notes in place.'
 const earlier = 'What does this repo do?'
 
 // A small git repo the hello Jill can branch from.
@@ -47,8 +49,11 @@ const jev = createServer((req, res) => {
   req.on('data', chunk => { body += chunk })
   req.on('end', () => {
     jevRequests.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) })
-    const hello = /New message: "Please say hello/.test(JSON.parse(body).messages[1].content)
-    const content = JSON.stringify(hello ? { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.93 } : { label: 'talk', confidence: 0.9 })
+    const asked = JSON.parse(body).messages[1].content
+    const hello = /New message: "Please say hello/.test(asked)
+    const direct = /New message: "Please tidy/.test(asked)
+    const content = JSON.stringify(hello ? { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.93 }
+      : direct ? { label: 'new', jill: 'direct', inputs: {}, confidence: 0.91 } : { label: 'talk', confidence: 0.9 })
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ choices: [{ message: { content } }] }))
   })
@@ -56,10 +61,12 @@ const jev = createServer((req, res) => {
 jev.listen(0, '127.0.0.1')
 await once(jev, 'listening')
 const jevUrl = `http://127.0.0.1:${jev.address().port}/v1/chat/completions`
-await mkdir(jillsHome, { recursive: true })
+// A worktree: false Jill, so the card's "no worktree" warning gets a visual check.
+await mkdir(join(jillsHome, 'jills', 'direct'), { recursive: true })
+await writeFile(join(jillsHome, 'jills', 'direct', 'JILL.md'), '---\nname: direct\ndescription: Tidy notes in your checkout\nworktree: false\nsteps:\n  a: {run: "true"}\n---\n')
 await writeFile(join(jillsHome, 'config.yml'), [
   'auto: false',
-  `jill_paths: [${JSON.stringify(join(repoRoot, 'examples'))}]`,
+  `jill_paths: [${JSON.stringify(join(repoRoot, 'examples'))}, ${JSON.stringify(join(jillsHome, 'jills'))}]`,
   'agent_paths: []',
   `jev: { url: ${JSON.stringify(jevUrl)}, key_env: JILLS_SMOKE_JEV_KEY, model: typesafe/jev-router }`,
   '',
@@ -70,6 +77,7 @@ for (const name of Object.keys(env)) if (/KEY|SECRET|TOKEN|PASSWORD/.test(name))
 Object.assign(env, {
   DSH_HOME: dshHome, JILLS_HOME: jillsHome, JILLS_LIB: join(repoRoot, 'dist/src/index.js'), JILLS_SMOKE_JEV_KEY: 'smoke-fake-key',
   JILLS_SMOKE_REPO: repo, JILLS_SMOKE_TITLE: title, JILLS_SMOKE_MESSAGE: message, JILLS_SMOKE_EARLIER: earlier,
+  JILLS_SMOKE_DIRECT_TITLE: directTitle, JILLS_SMOKE_DIRECT_MESSAGE: directMessage,
 })
 /** File text; dsh session logs (*.zstd) are a series of zstd frames, decoded one by one. */
 function readText(file) {
@@ -125,17 +133,20 @@ try {
   await page.addLocatorHandler(page.getByRole('button', { name: /^(Continue|继续)$/ }), button => button.click())
   await page.addLocatorHandler(page.getByRole('button', { name: 'Configure later', exact: true }), button => button.click())
   await page.goto(url, { waitUntil: 'load' })
-  // The fixture writes its two-turn chat while the Host starts; reload until the session is listed.
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await page.getByRole('textbox', { name: 'Search session names' }).fill(title, { timeout: 90000 })
-      await page.getByRole('treeitem', { name: new RegExp(title) }).first().click({ timeout: 30000 })
-      break
-    } catch (error) {
-      if (attempt >= 4) throw error
-      await page.reload({ waitUntil: 'load' })
+  // The fixture writes its chats while the Host starts; reload until the session is listed.
+  const openSession = async name => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await page.getByRole('textbox', { name: 'Search session names' }).fill(name, { timeout: 90000 })
+        await page.getByRole('treeitem', { name: new RegExp(name) }).first().click({ timeout: 30000 })
+        return
+      } catch (error) {
+        if (attempt >= 4) throw error
+        await page.reload({ waitUntil: 'load' })
+      }
     }
   }
+  await openSession(title)
   const card = page.getByRole('group', { name: 'Jills suggestion: hello' })
   await card.waitFor({ timeout: 60000 })
   for (const name of ['Start', 'Edit', 'Not this', 'Never']) await card.getByRole('button', { name, exact: true }).waitFor()
@@ -166,7 +177,20 @@ try {
   assert.match(git('show', `${branch}:hello.txt`), /hello Aidan and team/)
   assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'the user branch is untouched')
 
-  assert.equal(jevRequests.length, 2, 'one Jev call per user message')
+  // worktree: false Jill: the card warns, in dark and light.
+  await openSession(directTitle)
+  const directCard = page.getByRole('group', { name: 'Jills suggestion: direct' })
+  await directCard.waitFor({ timeout: 60000 })
+  const warn = directCard.getByRole('note')
+  assert.equal(await warn.innerText(), 'no worktree: edits your checkout directly')
+  assert.ok(await warn.isVisible(), 'the no-worktree warning is visible')
+  await directCard.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: join(output, 'jills-dsh-no-worktree.png') })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.screenshot({ path: join(output, 'jills-dsh-no-worktree-light.png') })
+  await page.emulateMedia({ colorScheme: 'dark' })
+
+  assert.equal(jevRequests.length, 3, 'one Jev call per user message')
   const helloRequest = jevRequests.find(r => /New message: "Please say hello/.test(r.body.messages[1].content))
   assert.ok(helloRequest, 'Jev was asked about the hello message')
   assert.equal(helloRequest.body.model, 'typesafe/jev-router')
@@ -188,7 +212,7 @@ try {
   assert.deepEqual(errors, [])
   assert.ok(!readdirSync(output).includes('jills-dsh-failure.png'), 'no failure screenshot from this run')
   console.log(`PASS dsh smoke: card shown, Jev got the last turns, Edit + Start ran Jill hello -> ${line}; agent told (${logged.map(f => f.slice(temp.length)).join(', ')})`)
-  console.log(`screenshots: ${output}/jills-dsh-card.png, jills-dsh-status.png (temp: ${temp})`)
+  console.log(`screenshots: ${output}/jills-dsh-card.png, jills-dsh-status.png, jills-dsh-no-worktree(-light).png (temp: ${temp})`)
 } catch (error) {
   await page?.screenshot({ path: join(output, 'jills-dsh-failure.png') }).catch(() => {})
   console.error('jills DOM:', await page?.evaluate(() => [...document.querySelectorAll('.jills-card, .jills-note, [class*=jills]')].map(e => e.outerHTML.slice(0, 600)).join('\n')).catch(String))

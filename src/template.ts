@@ -8,16 +8,17 @@ export interface TemplateVars {
 }
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/y;
-const PLACEHOLDER_G = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+const up = (s: string) => s.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
 
-function lookup(vars: TemplateVars, path: string): string | undefined {
-  const parts = path.split(".");
-  if (parts[0] === "inputs" && parts.length === 2) return vars.inputs[parts[1]!];
-  if (parts[0] === "task" && parts.length === 1) return vars.task ?? vars.inputs.task;
-  if (parts[0] === "copy" && parts.length === 1) return vars.copy !== undefined ? String(vars.copy) : undefined;
-  if (parts[0] === "run_id" && parts.length === 1) return vars.run_id;
-  if (parts[0] === "steps" && parts.length === 3 && parts[2] === "output") return vars.steps?.[parts[1]!]?.output;
-  return undefined;
+/** One placeholder key: its plain value and the env var name it gets in run: commands. */
+function resolveKey(vars: TemplateVars, key: string): { value?: string; env: string } {
+  const [head, name, tail, more] = key.split(".");
+  if (head === "inputs" && name && !tail) return { value: vars.inputs[name], env: `JILLS_INPUT_${up(name)}` };
+  if (head === "steps" && name && tail === "output" && !more) return { value: vars.steps?.[name]?.output, env: `JILLS_STEP_OUT_${up(name)}` };
+  if (key === "task") return { value: vars.task ?? vars.inputs.task, env: "JILLS_TASK" };
+  if (key === "copy") return { value: vars.copy?.toString(), env: "JILLS_COPY" };
+  if (key === "run_id") return { value: vars.run_id, env: "JILLS_RUN_ID" };
+  return { env: `JILLS_VAR_${up(key)}` };
 }
 
 /**
@@ -26,19 +27,7 @@ function lookup(vars: TemplateVars, path: string): string | undefined {
  * (agent tasks, nested Jill inputs). Unknown names expand to "".
  */
 export function renderTemplate(tpl: string, vars: TemplateVars): string {
-  return tpl.replace(PLACEHOLDER_G, (_m, key: string) => lookup(vars, key) ?? "");
-}
-
-/** Env var name for one placeholder key. */
-function envBase(key: string): string {
-  const up = (s: string) => s.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
-  const parts = key.split(".");
-  if (parts[0] === "inputs" && parts.length === 2) return `JILLS_INPUT_${up(parts[1]!)}`;
-  if (key === "task") return "JILLS_TASK";
-  if (key === "copy") return "JILLS_COPY";
-  if (key === "run_id") return "JILLS_RUN_ID";
-  if (parts[0] === "steps" && parts.length === 3 && parts[2] === "output") return `JILLS_STEP_OUT_${up(parts[1]!)}`;
-  return `JILLS_VAR_${up(key)}`;
+  return tpl.replace(new RegExp(PLACEHOLDER.source, "g"), (_m, key: string) => resolveKey(vars, key).value ?? "");
 }
 
 type Ctx = { kind: "plain" } | { kind: "subst"; depth: number } | { kind: "single" } | { kind: "ansi" } | { kind: "double" } | { kind: "backtick" };
@@ -66,11 +55,12 @@ export function renderShellTemplate(tpl: string, vars: TemplateVars): ShellTempl
   const varName = (key: string): string => {
     const hit = nameOfKey.get(key);
     if (hit) return hit;
-    let name = envBase(key);
-    for (let i = 2; keyOfName.has(name); i++) name = `${envBase(key)}_${i}`;
+    const { value, env: base } = resolveKey(vars, key);
+    let name = base;
+    for (let i = 2; keyOfName.has(name); i++) name = `${base}_${i}`;
     keyOfName.set(name, key);
     nameOfKey.set(key, name);
-    env[name] = lookup(vars, key) ?? "";
+    env[name] = value ?? "";
     return name;
   };
   const stack: Ctx[] = [{ kind: "plain" }];
@@ -94,72 +84,27 @@ export function renderShellTemplate(tpl: string, vars: TemplateVars): ShellTempl
       continue;
     }
     const ch = tpl[i]!;
-    const next = tpl[i + 1];
+    const two = ch + (tpl[i + 1] ?? "");
     const t = top();
-    switch (t.kind) {
-      case "plain":
-      case "subst":
-        if (ch === "\\" && next !== undefined) {
-          out += ch + next;
-          i += 2;
-          continue;
-        }
-        if (ch === "$" && next === "'") {
-          stack.push({ kind: "ansi" });
-          out += "$'";
-          i += 2;
-          continue;
-        }
-        if (ch === "$" && next === "(") {
-          stack.push({ kind: "subst", depth: 0 });
-          out += "$(";
-          i += 2;
-          continue;
-        }
-        if (ch === "'") stack.push({ kind: "single" });
-        else if (ch === '"') stack.push({ kind: "double" });
-        else if (ch === "`") stack.push({ kind: "backtick" });
-        else if (t.kind === "subst" && ch === "(") t.depth++;
-        else if (t.kind === "subst" && ch === ")") {
-          if (t.depth === 0) stack.pop();
-          else t.depth--;
-        }
-        break;
-      case "single":
-        if (ch === "'") stack.pop();
-        break;
-      case "ansi":
-        if (ch === "\\" && next !== undefined) {
-          out += ch + next;
-          i += 2;
-          continue;
-        }
-        if (ch === "'") stack.pop();
-        break;
-      case "double":
-        if (ch === "\\" && next !== undefined) {
-          out += ch + next;
-          i += 2;
-          continue;
-        }
-        if (ch === "$" && next === "(") {
-          stack.push({ kind: "subst", depth: 0 });
-          out += "$(";
-          i += 2;
-          continue;
-        }
-        if (ch === '"') stack.pop();
-        else if (ch === "`") stack.push({ kind: "backtick" });
-        break;
-      case "backtick":
-        if (ch === "\\" && next !== undefined) {
-          out += ch + next;
-          i += 2;
-          continue;
-        }
-        if (ch === "`") stack.pop();
-        break;
+    const code = t.kind === "plain" || t.kind === "subst";
+    const push = (c: Ctx) => void stack.push(c);
+    if (two.length === 2 && ch === "\\" && t.kind !== "single") {
+      out += two; // an escaped character never opens or closes anything
+      i += 2;
+      continue;
     }
+    if ((code && two === "$'") || ((code || t.kind === "double") && two === "$(")) {
+      push(two === "$'" ? { kind: "ansi" } : { kind: "subst", depth: 0 });
+      out += two;
+      i += 2;
+      continue;
+    }
+    if (code && ch === "'") push({ kind: "single" });
+    else if (code && ch === '"') push({ kind: "double" });
+    else if ((code || t.kind === "double") && ch === "`") push({ kind: "backtick" });
+    else if (t.kind === "subst" && ch === "(") t.depth++;
+    else if (t.kind === "subst" && ch === ")") t.depth === 0 ? stack.pop() : t.depth--;
+    else if (((t.kind === "single" || t.kind === "ansi") && ch === "'") || (t.kind === "double" && ch === '"') || (t.kind === "backtick" && ch === "`")) stack.pop();
     out += ch;
     i++;
   }

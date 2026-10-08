@@ -1,14 +1,14 @@
 // Regression tests for the lead review fix round 3.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { check, newJill, runNow, start, suggest, wait } from "../src/api.js";
+import { check, newJill, runNow, start, status, stop, suggest, wait } from "../src/api.js";
 import { NO_WORKTREE_NOTE, parseJill } from "../src/jillfile.js";
 import { totalLimit } from "../src/engine.js";
-import { procStartToken } from "../src/proc.js";
-import { loadRecord, refreshRecord, saveRecord, type RunRecord } from "../src/runs.js";
+import { bootId } from "../src/proc.js";
+import { listRecords, loadRecord, refreshRecord, saveHeartbeat, saveRecord, type RunRecord } from "../src/runs.js";
 import { MAX_TIMER_MS, sleep } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -30,22 +30,8 @@ function sleeper(): ChildProcess {
   return c;
 }
 
-/** A node "runner": on SIGTERM writes a marker, optionally overwrites the record as failed, then exits (or ignores it). */
-function fakeRunner(marker: string, mode: "exit" | "ignore", recordFile?: string): ChildProcess {
-  const code = `
-    const fs = require("node:fs");
-    process.on("SIGTERM", () => {
-      fs.writeFileSync(${JSON.stringify(marker)}, "TERM");
-      if (${JSON.stringify(mode)} === "exit") {
-        const f = ${JSON.stringify(recordFile ?? "")};
-        if (f) { const r = JSON.parse(fs.readFileSync(f, "utf8")); r.state = "failed"; r.error = "runner stopped: SIGTERM"; fs.writeFileSync(f, JSON.stringify(r)); }
-        process.exit(1);
-      }
-    });
-    fs.writeFileSync(${JSON.stringify(marker + ".ready")}, "1");
-    setInterval(() => {}, 1000);
-  `;
-  const c = spawn(process.execPath, ["-e", code], { detached: true, stdio: "ignore" });
+function tagged(runId: string): ChildProcess {
+  const c = spawn("sleep", ["60"], { detached: true, stdio: "ignore", env: { ...process.env, JILLS_RUN_ID: runId } });
   c.unref();
   kids.push(c);
   return c;
@@ -54,6 +40,8 @@ function fakeRunner(marker: string, mode: "exit" | "ignore", recordFile?: string
 async function until(fn: () => boolean, ms = 5000): Promise<void> {
   for (let t = 0; t < ms && !fn(); t += 25) await sleep(25);
 }
+
+const mono = (agoMs = 0) => String(process.hrtime.bigint() - BigInt(agoMs) * 1_000_000n);
 
 function record(home: string, id: string, extra: Partial<RunRecord>): RunRecord {
   mkdirSync(join(home, "runs"), { recursive: true });
@@ -80,131 +68,107 @@ function record(home: string, id: string, extra: Partial<RunRecord>): RunRecord 
   return r;
 }
 
-// ---------------------------------------------------------------- 1. markStuck: no blind SIGKILL
+// ---------------------------------------------------------------- 1. observers never signal; stop is env-scoped
 
-test("stuck runner gets SIGTERM first; its own 'failed' write does not replace stuck", async () => {
-  const home = tmpHome();
-  const marker = join(tmp(), "term");
-  const file = join(home, "runs", "term-1.json");
-  const runner = fakeRunner(marker, "exit", file);
-  await until(() => existsSync(marker + ".ready"));
-  record(home, "term-1", { pid: runner.pid, pidStart: procStartToken(runner.pid) });
-  const w = await wait("term-1", { home, timeoutMs: 10_000, pollMs: 50, staleMs: 100, killGraceMs: 3000 });
-  assert.equal(w.record.state, "stuck");
-  assert.equal(readFileSync(marker, "utf8"), "TERM", "runner got SIGTERM");
-  await until(() => !pidAlive(runner.pid!));
-  assert.equal(pidAlive(runner.pid!), false);
-  assert.equal(loadRecord(home, "term-1")!.state, "stuck", "stuck survives the runner's own write");
-});
-
-test("a runner that ignores SIGTERM gets SIGKILL after the grace", async () => {
-  const home = tmpHome();
-  const marker = join(tmp(), "term");
-  const runner = fakeRunner(marker, "ignore");
-  await until(() => existsSync(marker + ".ready"));
-  record(home, "kill-1", { pid: runner.pid, pidStart: procStartToken(runner.pid) });
-  const t0 = Date.now();
-  const w = await wait("kill-1", { home, timeoutMs: 10_000, pollMs: 50, staleMs: 100, killGraceMs: 600 });
-  assert.equal(w.record.state, "stuck");
-  await until(() => !pidAlive(runner.pid!));
-  assert.equal(readFileSync(marker, "utf8"), "TERM");
-  assert.equal(pidAlive(runner.pid!), false, "SIGKILL after grace");
-  assert.ok(Date.now() - t0 >= 600, "not killed before the grace");
-});
-
-test("a recycled runner or step pid (start token differs) is never signaled", async () => {
-  const home = tmpHome();
-  const other = sleeper();
-  const otherStep = sleeper();
-  record(home, "recycled-1", {
-    pid: other.pid,
-    pidStart: "linux:1",
-    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running", pid: otherStep.pid, pidStart: "linux:1" } },
-  });
-  const w = await wait("recycled-1", { home, timeoutMs: 5000, pollMs: 50, staleMs: 100, killGraceMs: 200 });
-  // The recorded runner (start token) is gone, so the run failed — but the
-  // processes that now hold those pids were left alone.
-  assert.equal(w.record.state, "failed");
-  await sleep(400);
-  assert.equal(pidAlive(other.pid!), true, "unrelated process with the runner's pid survives");
-  assert.equal(pidAlive(otherStep.pid!), true, "unrelated process with the step's pid survives");
-});
-
-test("stuck run: a step pid now held by another process is not signaled", async () => {
+test("observer marks a hung runner stuck without signaling it or its steps", async () => {
   const home = tmpHome();
   const runner = sleeper();
-  const otherStep = sleeper();
-  record(home, "recycled-2", {
+  const step = sleeper();
+  record(home, "hung-obs", {
     pid: runner.pid,
-    pidStart: procStartToken(runner.pid),
-    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running", pid: otherStep.pid, pidStart: "linux:1" } },
+    heartbeat: { at: new Date().toISOString(), mono: mono(60_000), since: mono(120_000), bootId: bootId() },
+    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running" } },
   });
-  const w = await wait("recycled-2", { home, timeoutMs: 5000, pollMs: 50, staleMs: 100, killGraceMs: 200 });
-  assert.equal(w.record.state, "stuck");
-  await until(() => !pidAlive(runner.pid!));
-  assert.equal(pidAlive(runner.pid!), false, "the real runner is stopped");
-  assert.equal(pidAlive(otherStep.pid!), true, "the recycled step pid is left alone");
+  const r = status("hung-obs", { home })!;
+  assert.equal(r.state, "stuck");
+  assert.match(r.error!, /stopped beating.*jills stop hung-obs/);
+  assert.equal(r.steps.a!.state, "stuck");
+  await sleep(300);
+  assert.equal(pidAlive(runner.pid!), true, "observer never signals the runner");
+  assert.equal(pidAlive(step.pid!), true, "observer never signals a step");
+});
+
+test("a runner whose pid is gone is stuck at once (one-shot status, no deadline needed)", () => {
+  const home = tmpHome();
+  record(home, "gone-1", { pid: 999_999_99, deadline: new Date(Date.now() + 3_600_000).toISOString() });
+  const r = status("gone-1", { home })!;
+  assert.equal(r.state, "stuck");
+  assert.match(r.error!, /runner process is gone/);
+});
+
+test("a record from another boot is stuck, and stop signals nothing for it", async () => {
+  const home = tmpHome();
+  const t = tagged("boot-1");
+  record(home, "boot-1", { pid: t.pid, heartbeat: { at: new Date().toISOString(), mono: mono(), since: mono(), bootId: "not-this-boot" } });
+  assert.equal(status("boot-1", { home })!.state, "stuck");
+  const s = await stop("boot-1", { home, graceMs: 200 });
+  assert.deepEqual(s.pids, []);
+  assert.equal(pidAlive(t.pid!), true);
+});
+
+test("stop kills only processes tagged JILLS_RUN_ID=<run>; an untagged sibling and another run survive", async () => {
+  const home = tmpHome();
+  const mine = [tagged("stop-1"), tagged("stop-1")];
+  const sibling = sleeper();
+  const other = tagged("stop-2");
+  await until(() => mine.every((k) => readFileSync(`/proc/${k.pid}/environ`, "utf8").includes("JILLS_RUN_ID=stop-1")));
+  record(home, "stop-1", { pid: mine[0]!.pid, heartbeat: { at: new Date().toISOString(), mono: mono(), since: mono(), bootId: bootId() } });
+  const s = await stop("stop-1", { home, graceMs: 2000 });
+  assert.deepEqual([...s.pids].sort(), mine.map((k) => k.pid).sort());
+  await until(() => mine.every((k) => !pidAlive(k.pid!)));
+  for (const k of mine) assert.equal(pidAlive(k.pid!), false, "tagged process stopped");
+  assert.equal(pidAlive(sibling.pid!), true, "untagged sibling untouched");
+  assert.equal(pidAlive(other.pid!), true, "another run's process untouched");
+  assert.equal(s.record.state, "failed");
+  assert.match(s.record.error!, /stopped by jills stop/);
 });
 
 test("wall clock past the deadline (suspend/clock jump) with a live, beating runner is not stuck", async () => {
   const home = tmpHome();
   const runner = sleeper();
-  record(home, "jump-1", {
-    pid: runner.pid,
-    pidStart: procStartToken(runner.pid),
-    heartbeat: { at: new Date().toISOString(), elapsedMs: 5_000 },
-  });
-  const w = await wait("jump-1", { home, timeoutMs: 500, pollMs: 50, staleMs: 10_000 });
+  record(home, "jump-1", { pid: runner.pid, heartbeat: { at: new Date().toISOString(), mono: mono(), since: mono(5_000), bootId: bootId() } });
+  const w = await wait("jump-1", { home, timeoutMs: 500, pollMs: 50 });
   assert.equal(w.timedOut, true);
   assert.equal(w.record.state, "running");
+});
+
+test("runner's own monotonic time past the limit → stuck even with a fresh stamp", () => {
+  const home = tmpHome();
+  const runner = sleeper();
+  record(home, "over-1", { pid: runner.pid, heartbeat: { at: new Date().toISOString(), mono: mono(), since: mono(10 * 60_000), bootId: bootId() } });
+  assert.equal(refreshRecord(home, "over-1")!.state, "stuck");
   assert.equal(pidAlive(runner.pid!), true);
 });
 
-test("a stale heartbeat is not stuck on one look; it must stay stale on the observer's clock", async () => {
+test("the runner's next beat never overwrites stuck on disk; the runner stops its own steps", async () => {
   const home = tmpHome();
-  const runner = sleeper();
-  record(home, "stale-1", {
-    pid: runner.pid,
-    pidStart: procStartToken(runner.pid),
-    heartbeat: { at: new Date(Date.now() - 10 * 60_000).toISOString(), elapsedMs: 5_000 },
+  writeJill(home, "beat", "worktree: false\nsteps:\n  a: {run: sleep 30}");
+  const run = runNow("beat", { home, cwd: tmp() });
+  let id = "";
+  await until(() => {
+    const r = listRecords(home)[0];
+    id = r?.id ?? "";
+    return r?.steps.a?.state === "running";
   });
-  assert.equal(refreshRecord(home, "stale-1", { staleMs: 300 })!.state, "running", "first look after resume");
-  // The runner beats again (resumed): still not stuck.
-  const r = loadRecord(home, "stale-1")!;
-  r.heartbeat = { at: new Date().toISOString(), elapsedMs: 6_000 };
-  saveRecord(home, r);
-  await sleep(400);
-  assert.equal(refreshRecord(home, "stale-1", { staleMs: 300 })!.state, "running");
-  // No beat for longer than the window → stuck.
-  r.heartbeat = { at: new Date(Date.now() - 60_000).toISOString(), elapsedMs: 6_000 };
-  saveRecord(home, r);
-  assert.equal(refreshRecord(home, "stale-1", { staleMs: 300, killGraceMs: 200 })!.state, "running");
-  await sleep(400);
-  assert.equal(refreshRecord(home, "stale-1", { staleMs: 300, killGraceMs: 200 })!.state, "stuck");
+  const r = loadRecord(home, id)!;
+  saveRecord(home, { ...r, state: "stuck", error: "marked by test", finished: new Date().toISOString() });
+  assert.equal(saveHeartbeat(home, id, r.heartbeat!), false);
+  const t0 = Date.now();
+  const final = await run; // the runner's 5 s beat sees stuck on disk and halts its steps
+  assert.ok(Date.now() - t0 < 15_000);
+  assert.equal(final.state, "stuck");
+  assert.equal(loadRecord(home, id)!.state, "stuck");
+  assert.equal(loadRecord(home, id)!.error, "marked by test");
 });
 
-test("runner's own elapsed time past the limit → stuck even with a fresh heartbeat", async () => {
-  const home = tmpHome();
-  const runner = sleeper();
-  record(home, "over-1", {
-    pid: runner.pid,
-    pidStart: procStartToken(runner.pid),
-    heartbeat: { at: new Date().toISOString(), elapsedMs: 10 * 60_000 },
-  });
-  const w = await wait("over-1", { home, timeoutMs: 5000, pollMs: 50, killGraceMs: 200 });
-  assert.equal(w.record.state, "stuck");
-  await until(() => !pidAlive(runner.pid!));
-  assert.equal(pidAlive(runner.pid!), false);
-});
-
-test("a real run records its runner start token and a heartbeat", async () => {
+test("a real run records its runner pid and a monotonic heartbeat with the boot id", async () => {
   const home = tmpHome();
   writeJill(home, "quick", "worktree: false\nsteps:\n  a: {run: 'true'}");
   const r = await runNow("quick", { home, cwd: tmp() });
   assert.equal(r.state, "done");
-  assert.equal(r.pidStart, procStartToken(process.pid));
-  assert.ok(r.heartbeat && r.heartbeat.elapsedMs >= 0);
-  assert.ok(r.steps.a!.pid);
+  assert.equal(r.pid, process.pid);
+  assert.ok(BigInt(r.heartbeat!.mono) >= BigInt(r.heartbeat!.since));
+  assert.equal(r.heartbeat!.bootId, bootId());
 });
 
 // ---------------------------------------------------------------- 2. time limits
@@ -273,19 +237,16 @@ test("a worktree: false suggestion says 'no worktree: edits your checkout direct
 
 // ---------------------------------------------------------------- 5b. box: needs its isolation extension
 
-test("box: openshell / docker (and docker: true) are refused until the extension is installed", async () => {
+test("box: openshell / docker are refused until the extension is installed; docker: is not a field", async () => {
   const home = tmpHome();
   const repo = tmpRepo();
   writeJill(home, "shell", "box: openshell\nsteps:\n  a: {run: 'true'}");
   writeJill(home, "dock", "box: docker\nsteps:\n  a: {run: 'true'}");
-  writeJill(home, "alias", "docker: true\nsteps:\n  a: {run: 'true'}");
   await assert.rejects(start("shell", { home, cwd: repo }), /box: openshell, but the "openshell" isolation extension is not installed/);
   await assert.rejects(start("dock", { home, cwd: repo }), /"docker" isolation extension is not installed/);
-  await assert.rejects(start("alias", { home, cwd: repo }), /docker: true.*"docker" isolation extension is not installed/);
   const rep = await check({ home });
-  for (const n of ["shell", "dock", "alias"]) assert.ok(rep.errors.some((e) => e.includes(`Jill "${n}"`) && /isolation extension is not installed/.test(e)), n);
-  assert.equal(parseJill("---\nname: a\ndocker: true\nsteps:\n  s: {run: x}\n---\n").box, "docker");
-  assert.throws(() => parseJill("---\nname: a\ndocker: true\nbox: openshell\nsteps:\n  s: {run: x}\n---\n"), /conflicts with box: openshell/);
+  for (const n of ["shell", "dock"]) assert.ok(rep.errors.some((e) => e.includes(`Jill "${n}"`) && /isolation extension is not installed/.test(e)), n);
+  assert.throws(() => parseJill("---\nname: a\ndocker: true\nsteps:\n  s: {run: x}\n---\n"), /docker: is not a Jill field; use box: docker/);
   assert.throws(() => parseJill("---\nname: a\nbox: 12\nsteps:\n  s: {run: x}\n---\n"), /box must be a plug-in name/);
 });
 

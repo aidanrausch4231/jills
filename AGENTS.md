@@ -28,7 +28,7 @@ Jills follows the same rules:
 1. **Tiny core.** The core only loads Jills and agents, schedules steps, keeps run
    records, guards safety, and fires events. It knows no harness, model, box or cloud.
 2. **Everything else is a plug-in or add-on.** New features go in a plug-in slot
-   (`matcher`, `runner`, `isolation`, `place`, `check`) or an add-on (one per harness),
+   (`matcher`, `runner`, `isolation`, `place`, `check`, `hook`) or an add-on (one per harness),
    never in the core. The defaults are plug-ins too, so replacing one is never a hack.
 3. **One file, one job.** A plug-in is a single file behind the versioned interface in
    `src/plugins/types.ts`. Add it to `plugins:` in config; no core edit needed.

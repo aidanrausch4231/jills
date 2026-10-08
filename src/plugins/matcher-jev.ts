@@ -1,4 +1,16 @@
+import type { JillsConfig } from "../config.js";
 import type { JillSummary, MatchInput, MatchResult, MatcherPlugin } from "./types.js";
+
+/** Config `jev:` with defaults (model, key_env, url, timeout_ms). */
+export function jevConfig(config: JillsConfig) {
+  const j = (config.raw.jev ?? {}) as Record<string, unknown>;
+  return {
+    model: String(j.model ?? "typesafe/jev-router"),
+    key_env: String(j.key_env ?? "OPENROUTER_API_KEY"),
+    url: String(j.url ?? "https://openrouter.ai/api/v1/chat/completions"),
+    timeout_ms: typeof j.timeout_ms === "number" ? j.timeout_ms : 8000,
+  };
+}
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
@@ -26,7 +38,7 @@ export function buildJevRequest(input: MatchInput): { model: string; messages: {
     `New message: ${JSON.stringify(input.message)}`,
   ].join("\n");
   return {
-    model: input.config.jev.model,
+    model: jevConfig(input.config).model,
     messages: [
       { role: "system", content: JEV_SYSTEM_PROMPT },
       { role: "user", content: user },
@@ -75,15 +87,16 @@ const jevMatcher: MatcherPlugin = {
   apiVersion: 1,
   name: "jev",
   async match(input) {
-    const key = process.env[input.config.jev.key_env];
+    const jev = jevConfig(input.config);
+    const key = process.env[jev.key_env];
     if (!key) return undefined;
     const f: FetchLike = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     try {
-      const res = await f(input.config.jev.url, {
+      const res = await f(jev.url, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${key}`, "x-title": "jills" },
         body: JSON.stringify(buildJevRequest(input)),
-        signal: AbortSignal.timeout(input.config.jev.timeout_ms),
+        signal: AbortSignal.timeout(jev.timeout_ms),
       });
       if (!res.ok) return undefined;
       const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };

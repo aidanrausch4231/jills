@@ -91,7 +91,7 @@ function fakeCore(over: Partial<Record<keyof JillsCore, any>> = {}) {
     never: rec("never", async () => "muted hello for /repo"),
     quiet: rec("quiet", () => ({})),
     on: rec("on", async () => ({})),
-    lastSuggestion: rec("lastSuggestion", () => "hello"),
+    lastSuggested: rec("lastSuggested", () => ({ jill: "hello", inputs: {} })),
     setAuto: rec("setAuto", () => {}),
     resultLine: (r: any) => `jills run ${r.id} ${r.state}: ${r.jill} | branch ${r.branch} | logs ${r.logDir}`,
     TERMINAL: new Set(["done", "failed", "stuck", "needs-you"]),
@@ -263,7 +263,7 @@ describe("pi add-on: /jills commands", () => {
   });
 
   it("/jills go with nothing suggested warns", async () => {
-    const t = setup({ lastSuggestion: () => undefined });
+    const t = setup({ lastSuggested: () => undefined });
     await t.commands.get("jills").handler("go", t.ctx);
     assert.equal(t.called("go").length, 0);
     assert.match(t.calls.notify.at(-1)![0], /nothing suggested/);

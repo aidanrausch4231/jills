@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { findAgent, resolveModel, scanAgents } from "../src/agents.js";
 import { check, dryRun } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
-import { buildAgentCommand } from "../src/plugins/runner-agent.js";
+import { buildAgentCommand, resolveModel, scanAgents } from "../src/plugins/runner-agent.js";
 import { tmp, tmpHome, writeAgent, writeJill } from "./helpers.js";
 
 test("agent lookup searches agent_paths in order; first match wins", () => {
@@ -14,12 +13,12 @@ test("agent lookup searches agent_paths in order; first match wins", () => {
   writeAgent(b, "reviewer.md", "name: reviewer\ndescription: second\nmodel: big");
   writeAgent(b, "only-b.md", "name: only-b\ndescription: b");
   const scan = scanAgents([a, b]);
-  assert.equal(scan.agents.get("reviewer")!.description, "first");
-  assert.deepEqual(scan.agents.get("reviewer")!.tools, ["read", "grep"]);
-  assert.equal(scan.agents.get("only-b")!.description, "b");
+  assert.equal(scan.items.get("reviewer")!.description, "first");
+  assert.deepEqual(scan.items.get("reviewer")!.tools, ["read", "grep"]);
+  assert.equal(scan.items.get("only-b")!.description, "b");
   assert.deepEqual(scan.duplicates.get("reviewer"), [join(a, "rev.md"), join(b, "reviewer.md")]);
-  assert.equal(findAgent("reviewer", [b, a])!.description, "second");
-  assert.equal(findAgent("nope", [a, b]), undefined);
+  assert.equal(scanAgents([b, a]).items.get("reviewer")!.description, "second");
+  assert.equal(scanAgents([a, b]).items.get("nope"), undefined);
 });
 
 test("jills check warns on duplicate agent and Jill names", async () => {
@@ -50,17 +49,16 @@ test("model resolution: step > agent > tier > default", () => {
   assert.equal(resolveModel(undefined, ag, {}, undefined), undefined);
 });
 
-test("agent command lines for pi and claude", () => {
+test("agent command line for pi; other agent CLIs are refused (add-ons)", () => {
   const home = tmpHome("default_model: base\ntiers: {cheap: tiny}\n");
   const cfg = loadConfig(home);
   const agent = { name: "ex", description: "", instructions: "Be brief.", path: "/a/ex.md", tools: ["read", "grep", "find", "bash"], tier: "cheap" };
   const pi = buildAgentCommand(agent, "do it", undefined, cfg, "/tmp/p.md");
   assert.equal(pi.cmd, "pi");
   assert.deepEqual(pi.args, ["-p", "--model", "tiny", "--append-system-prompt", "/tmp/p.md", "--tools", "read,grep,find,bash", "--", "do it"]);
-  const cl = buildAgentCommand(agent, "do it", "opus", { ...cfg, agent_cli: "claude", claude_permission_mode: "acceptEdits" }, "/tmp/p.md");
-  assert.equal(cl.cmd, "claude");
-  assert.deepEqual(cl.args, ["-p", "--model", "opus", "--append-system-prompt", "Be brief.", "--tools", "Read,Grep,Glob,Bash", "--permission-mode", "acceptEdits", "--", "do it"]);
-  assert.throws(() => buildAgentCommand(agent, "x", undefined, { ...cfg, agent_cli: "nope" }, "f"), /not supported/);
+  const big = buildAgentCommand(agent, "do it", "opus", cfg, "/tmp/p.md");
+  assert.deepEqual(big.args.slice(0, 3), ["-p", "--model", "opus"]);
+  for (const cli of ["claude", "nope"]) assert.throws(() => buildAgentCommand(agent, "x", undefined, { ...cfg, raw: { ...cfg.raw, agent_cli: cli } }, "f"), /not supported/);
 });
 
 test("agent steps run the configured agent CLI headless", async () => {

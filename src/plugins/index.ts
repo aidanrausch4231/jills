@@ -6,7 +6,7 @@ import exitCodeCheck from "./check-exit-code.js";
 import jevMatcher from "./matcher-jev.js";
 import keywordsMatcher from "./matcher-keywords.js";
 import worktreeIsolation from "./isolation-worktree.js";
-import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin } from "./types.js";
+import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin } from "./types.js";
 
 export interface PluginSet {
   /** Tried in order; the first one that answers wins. */
@@ -15,6 +15,8 @@ export interface PluginSet {
   runners: RunnerPlugin[];
   isolation: Map<string, IsolationPlugin>;
   checks: Map<string, CheckPlugin>;
+  /** Every hook sees every run event. */
+  hooks: HookPlugin[];
 }
 
 export function builtinPlugins(): PluginSet {
@@ -23,6 +25,7 @@ export function builtinPlugins(): PluginSet {
     runners: [commandRunner, agentRunner],
     isolation: new Map([[worktreeIsolation.name, worktreeIsolation]]),
     checks: new Map([[exitCodeCheck.name, exitCodeCheck]]),
+    hooks: [],
   };
 }
 
@@ -36,6 +39,7 @@ export function validatePlugin(p: unknown, source: string): AnyPlugin {
     runner: ["canRun", "run", "describe"],
     isolation: ["prepare", "child", "mergeBack", "commit"],
     check: ["check"],
+    hook: ["on"],
   };
   const slot = String(o.slot);
   if (!need[slot]) throw new Error(`${source}: unknown plug-in slot "${slot}" (v1 slots: ${Object.keys(need).join(", ")})`);
@@ -56,6 +60,9 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
       break;
     case "check":
       set.checks.set(p.name, p);
+      break;
+    case "hook":
+      set.hooks.push(p);
       break;
   }
 }

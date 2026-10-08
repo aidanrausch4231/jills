@@ -1,51 +1,29 @@
 #!/usr/bin/env node
-import {
-  check,
-  dismiss,
-  dryRun,
-  executeRun,
-  go,
-  listJills,
-  never,
-  newJill,
-  on,
-  quiet,
-  runNow,
-  setAuto,
-  start,
-  status,
-  suggest,
-  wait,
-} from "./api.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
+import { chat, check, dryRun, executeRun, go, listJills, never, newJill, on, runNow, setAuto, start, status, stop, suggest, wait } from "./api.js";
 import { loadConfig } from "./config.js";
 import type { Turn } from "./plugins/types.js";
 import { resultLine, type RunRecord, type RunState } from "./runs.js";
 import { parseDuration } from "./util.js";
 
-export const EXIT = {
-  ok: 0,
-  error: 1,
-  usage: 2,
-  noSuggestion: 3,
-  failed: 4,
-  stuck: 5,
-  needsYou: 6,
-  waitTimeout: 7,
-} as const;
+export const EXIT = { ok: 0, error: 1, usage: 2, noSuggestion: 3, failed: 4, stuck: 5, needsYou: 6, waitTimeout: 7 } as const;
 
 const USAGE = `jills — saved agent workflows that Jev suggests from chat
 
 Usage:
   jills list                                   list saved Jills
-  jills check                                  validate config, Jills, agents (warns on duplicates)
+  jills check                                  validate config, Jills, steps (warns on duplicates)
   jills suggest --session <id> [--repo <p>] [--json] "<message>"
                                                ask Jev about one chat message (recent turns: JSON on stdin)
   jills start <jill> [--input k=v]... [--repo <p>] [--session <id>] [--json] [--wait]
-  jills go --session <id> [<jill>] [--input k=v]... [--repo <p>]
+  jills go --session <id> [<jill>] [--input k=v]... [--repo <p>] [--json] [--wait]
                                                start the Jill last suggested in this chat with the
                                                inputs Jev proposed (--input overrides; undeclared keys dropped)
   jills wait <run> [--timeout 30m] [--json]    block until the run ends; print a one-line result
-  jills status [run] [--json]
+  jills status [run] [--json]                  never signals anything; a hung or dead runner shows as stuck
+  jills stop <run>                             stop every process of the run (env JILLS_RUN_ID=<run>), nothing else
   jills try <jill> --dry-run [--input k=v]...  show what would run (without --dry-run: run in foreground)
   jills dismiss --session <id>                 quiet for the rest of this chat
   jills never [--session <id>] [--jill <name>] [--repo <p>]   mute (a Jill or all) for this repo
@@ -59,64 +37,28 @@ Exit codes: 0 ok/done/suggestion, 1 error, 2 usage, 3 no suggestion,
             4 run failed, 5 run stuck (timeout), 6 run needs you (conflict), 7 wait timed out.
 Env: JILLS_HOME (default ~/.jills).`;
 
-interface Args {
-  pos: string[];
-  flags: Map<string, string[]>;
-}
-
-const BOOL_FLAGS = new Set(["json", "dry-run", "wait", "unmute", "help"]);
-
-function parseArgs(argv: string[]): Args {
-  const pos: string[] = [];
-  const flags = new Map<string, string[]>();
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--") {
-      pos.push(...argv.slice(i + 1));
-      break;
-    }
-    if (a.startsWith("--")) {
-      const eq = a.indexOf("=");
-      const name = eq > 0 ? a.slice(2, eq) : a.slice(2);
-      let val: string;
-      if (eq > 0) val = a.slice(eq + 1);
-      else if (BOOL_FLAGS.has(name)) val = "true";
-      else {
-        const next = argv[i + 1];
-        if (next === undefined) throw new UsageError(`--${name} needs a value`);
-        val = next;
-        i++;
-      }
-      flags.set(name, [...(flags.get(name) ?? []), val]);
-    } else if (a === "-h") flags.set("help", ["true"]);
-    else pos.push(a);
-  }
-  return { pos, flags };
-}
-
 class UsageError extends Error {}
 
-const flag = (a: Args, n: string) => a.flags.get(n)?.at(-1);
-const has = (a: Args, n: string) => a.flags.has(n);
-
-function inputs(a: Args): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const kv of a.flags.get("input") ?? []) {
-    const eq = kv.indexOf("=");
-    if (eq <= 0) throw new UsageError(`--input wants name=value, got "${kv}"`);
-    out[kv.slice(0, eq)] = kv.slice(eq + 1);
-  }
-  return out;
-}
+const OPTIONS = {
+  json: { type: "boolean" },
+  "dry-run": { type: "boolean" },
+  wait: { type: "boolean" },
+  unmute: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+  input: { type: "string", multiple: true },
+  session: { type: "string" },
+  repo: { type: "string" },
+  jill: { type: "string" },
+  timeout: { type: "string" },
+  message: { type: "string" },
+} as const;
 
 function need(v: string | undefined, what: string): string {
   if (!v) throw new UsageError(`missing ${what}`);
   return v;
 }
 
-function stateExit(s: RunState): number {
-  return s === "done" ? EXIT.ok : s === "stuck" ? EXIT.stuck : s === "needs-you" ? EXIT.needsYou : EXIT.failed;
-}
+const stateExit = (s: RunState) => (s === "done" ? EXIT.ok : s === "stuck" ? EXIT.stuck : s === "needs-you" ? EXIT.needsYou : EXIT.failed);
 
 async function readStdinTurns(): Promise<Turn[]> {
   if (process.stdin.isTTY) return [];
@@ -124,25 +66,16 @@ async function readStdinTurns(): Promise<Turn[]> {
   const got = await new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(chunks.length > 0), 500);
     process.stdin.on("data", (c: Buffer) => chunks.push(c));
-    process.stdin.on("end", () => {
-      clearTimeout(t);
-      resolve(true);
-    });
-    process.stdin.on("error", () => {
-      clearTimeout(t);
-      resolve(false);
-    });
+    process.stdin.on("end", () => resolve(true));
+    process.stdin.on("error", () => resolve(false));
+    process.stdin.on("close", () => clearTimeout(t));
   });
   process.stdin.destroy();
-  if (!got) return [];
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) return [];
   try {
-    const v = JSON.parse(raw) as unknown;
+    const v = got ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown) : [];
     const list = Array.isArray(v) ? v : (v as { recent?: unknown }).recent;
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
+    return (Array.isArray(list) ? list : [])
+      .filter((t): t is { role: string; text: string } => typeof t?.text === "string")
       .map((t) => ({ role: t.role === "assistant" ? "assistant" : "user", text: t.text }));
   } catch {
     return [];
@@ -151,159 +84,136 @@ async function readStdinTurns(): Promise<Turn[]> {
 
 function printRecord(r: RunRecord): void {
   console.log(resultLine(r));
-  for (const s of Object.values(r.steps)) {
-    console.log(`  ${s.state.padEnd(9)} ${s.key}${s.reason ? ` — ${s.reason}` : ""}${s.log ? `  (${s.log})` : ""}`);
-  }
+  for (const s of Object.values(r.steps)) console.log(`  ${s.state.padEnd(9)} ${s.key}${s.reason ? ` — ${s.reason}` : ""}${s.log ? `  (${s.log})` : ""}`);
 }
 
 export async function main(argv: string[]): Promise<number> {
-  const a = parseArgs(argv);
-  const [cmd, ...rest] = a.pos;
-  if (!cmd || has(a, "help") || cmd === "help") {
-    console.log(USAGE);
-    return cmd || has(a, "help") ? EXIT.ok : EXIT.usage;
+  let parsed;
+  try {
+    parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
+  } catch (e) {
+    throw new UsageError((e as Error).message);
   }
-  const json = has(a, "json");
+  const f = parsed.values;
+  const [cmd, ...rest] = parsed.positionals;
+  if (!cmd || f.help || cmd === "help") {
+    console.log(USAGE);
+    return cmd || f.help ? EXIT.ok : EXIT.usage;
+  }
+  const out = (v: unknown, text: () => string) => console.log(f.json ? JSON.stringify(v, null, 2) : text());
+  const inputs = () =>
+    Object.fromEntries(
+      (f.input ?? []).map((kv) => {
+        const eq = kv.indexOf("=");
+        if (eq <= 0) throw new UsageError(`--input wants name=value, got "${kv}"`);
+        return [kv.slice(0, eq), kv.slice(eq + 1)];
+      }),
+    );
+  const session = () => need(f.session, "--session <id>");
   switch (cmd) {
     case "list": {
       const js = await listJills();
-      if (json) console.log(JSON.stringify(js, null, 2));
-      else if (!js.length) console.log(`no Jills (jill_paths: ${loadConfig().jill_paths.join(", ")})`);
-      else for (const j of js) console.log(`${j.name.padEnd(20)} ${j.description}`);
+      out(js, () => (js.length ? js.map((j) => `${j.name.padEnd(20)} ${j.description}`).join("\n") : `no Jills (jill_paths: ${loadConfig().jill_paths.join(", ")})`));
       return EXIT.ok;
     }
     case "check": {
       const r = await check();
-      if (json) console.log(JSON.stringify(r, null, 2));
-      else {
-        console.log(`${r.jills.length} Jill(s), ${r.agents} agent(s)`);
-        for (const w of r.warnings) console.log(`warning: ${w}`);
-        for (const e of r.errors) console.log(`error: ${e}`);
-        if (!r.errors.length) console.log("ok");
-      }
+      out(r, () => [`${r.jills.length} Jill(s)`, ...r.warnings.map((w) => `warning: ${w}`), ...r.errors.map((e) => `error: ${e}`), ...(r.errors.length ? [] : ["ok"])].join("\n"));
       return r.errors.length ? EXIT.error : EXIT.ok;
     }
     case "suggest": {
-      const session = need(flag(a, "session"), "--session <id>");
-      const message = rest.join(" ") || flag(a, "message");
-      if (!message) throw new UsageError("missing message");
-      const recent = await readStdinTurns();
-      const s = await suggest({ session, message, recent, repo: flag(a, "repo") });
-      if (json) console.log(JSON.stringify(s, null, 2));
-      else if (s.action === "suggest") console.log(s.text);
+      const message = rest.join(" ") || f.message;
+      const s = await suggest({ session: session(), message: need(message, "message"), recent: await readStdinTurns(), repo: f.repo });
+      if (f.json || s.action === "suggest") out(s, () => s.text ?? "");
       return s.action === "suggest" ? EXIT.ok : EXIT.noSuggestion;
     }
     case "go":
     case "start": {
       let r: RunRecord;
       if (cmd === "go") {
-        // Inputs: the ones Jev proposed for the last suggestion (saved in the
-        // session state), overridden by --input flags; undeclared keys dropped.
-        const session = need(flag(a, "session"), "--session <id>");
-        const g = await go({ session, jill: rest[0], inputs: inputs(a), cwd: flag(a, "repo") });
+        const g = await go({ session: session(), jill: rest[0], inputs: inputs(), cwd: f.repo });
         if (g.dropped.length) console.error(`jills: ignored input(s) the Jill does not declare: ${g.dropped.join(", ")}`);
         r = g.record;
-      } else r = await start(need(rest[0], "<jill>"), { inputs: inputs(a), cwd: flag(a, "repo"), session: flag(a, "session") });
-      if (has(a, "wait")) {
+      } else r = await start(need(rest[0], "<jill>"), { inputs: inputs(), cwd: f.repo, session: f.session });
+      if (f.wait) {
         const w = await wait(r.id);
-        if (json) console.log(JSON.stringify(w.record, null, 2));
-        else console.log(w.line);
+        out(w.record, () => w.line);
         return stateExit(w.record.state);
       }
-      if (json) console.log(JSON.stringify({ run: r.id, jill: r.jill, state: r.state, record: r.logDir }, null, 2));
-      else console.log(`started Jill ${r.jill} as run ${r.id}\nwatch it: jills wait ${r.id}`);
+      out({ run: r.id, jill: r.jill, state: r.state, record: r.logDir }, () => `started Jill ${r.jill} as run ${r.id}\nwatch it: jills wait ${r.id}`);
       return EXIT.ok;
     }
     case "wait": {
-      const id = need(rest[0], "<run>");
-      const t = flag(a, "timeout");
-      const w = await wait(id, { timeoutMs: t ? parseDuration(t) : undefined });
-      if (json) console.log(JSON.stringify({ ...w.record, line: w.line, timedOut: w.timedOut }, null, 2));
-      else console.log(w.line);
+      const w = await wait(need(rest[0], "<run>"), { timeoutMs: f.timeout ? parseDuration(f.timeout) : undefined });
+      out({ ...w.record, line: w.line, timedOut: w.timedOut }, () => w.line);
       return w.timedOut ? EXIT.waitTimeout : stateExit(w.record.state);
     }
     case "status": {
-      if (rest[0]) {
-        const r = status(rest[0]);
-        if (!r) {
-          console.error(`no run ${rest[0]}`);
-          return EXIT.error;
-        }
-        if (json) console.log(JSON.stringify(r, null, 2));
-        else printRecord(r);
+      if (!rest[0]) {
+        const all = status();
+        out(all, () => (all.length ? all.slice(0, 20).map(resultLine).join("\n") : "no runs"));
         return EXIT.ok;
       }
-      const all = status();
-      if (json) console.log(JSON.stringify(all, null, 2));
-      else if (!all.length) console.log("no runs");
-      else for (const r of all.slice(0, 20)) console.log(resultLine(r));
+      const r = status(rest[0]);
+      if (!r) console.error(`no run ${rest[0]}`);
+      else if (f.json) out(r, () => "");
+      else printRecord(r);
+      return r ? EXIT.ok : EXIT.error;
+    }
+    case "stop": {
+      const s = await stop(need(rest[0], "<run>"));
+      out(s, () => `stopped ${s.pids.length} process(es)\n${resultLine(s.record)}`);
       return EXIT.ok;
     }
     case "try": {
       const jill = need(rest[0], "<jill>");
-      if (has(a, "dry-run")) {
-        for (const l of await dryRun(jill, { inputs: inputs(a), cwd: flag(a, "repo") })) console.log(l);
+      if (f["dry-run"]) {
+        for (const l of await dryRun(jill, { inputs: inputs(), cwd: f.repo })) console.log(l);
         return EXIT.ok;
       }
-      const r = await runNow(jill, {
-        inputs: inputs(a),
-        cwd: flag(a, "repo"),
-        onEvent: (e) => console.log(`[${e.at}] ${e.type}${e.step ? ` ${e.step}` : ""}${e.note ? ` — ${e.note}` : ""}`),
-      });
+      const onEvent = (e: { at: string; type: string; step?: string; note?: string }) => console.log(`[${e.at}] ${e.type}${e.step ? ` ${e.step}` : ""}${e.note ? ` — ${e.note}` : ""}`);
+      const r = await runNow(jill, { inputs: inputs(), cwd: f.repo, onEvent });
       printRecord(r);
       return stateExit(r.state);
     }
     case "dismiss":
-      dismiss(need(flag(a, "session"), "--session <id>"));
-      console.log("ok: no more suggestions in this chat");
-      return EXIT.ok;
-    case "never":
-      console.log(await never({ session: flag(a, "session"), jill: flag(a, "jill"), repo: flag(a, "repo") }));
-      return EXIT.ok;
     case "quiet":
-      quiet(need(flag(a, "session"), "--session <id>"));
-      console.log("ok: quiet mode on for this chat");
+      chat(session(), cmd as "dismiss" | "quiet");
+      console.log(cmd === "quiet" ? "ok: quiet mode on for this chat" : "ok: no more suggestions in this chat");
       return EXIT.ok;
     case "on":
-      await on(need(flag(a, "session"), "--session <id>"), { unmute: has(a, "unmute"), repo: flag(a, "repo") });
+      await on(session(), { unmute: f.unmute, repo: f.repo });
       console.log("ok: suggestions on for this chat");
+      return EXIT.ok;
+    case "never":
+      console.log(await never({ session: f.session, jill: f.jill, repo: f.repo }));
       return EXIT.ok;
     case "auto": {
       const v = rest[0];
-      if (v !== "on" && v !== "off") {
-        console.log(`auto is ${loadConfig().auto ? "on" : "off"}`);
-        return v === undefined ? EXIT.ok : EXIT.usage;
-      }
-      setAuto(v === "on");
-      console.log(`auto ${v}`);
-      return EXIT.ok;
+      if (v === "on" || v === "off") setAuto(v === "on");
+      console.log(v === "on" || v === "off" ? `auto ${v}` : `auto is ${loadConfig().auto ? "on" : "off"}`);
+      return v === undefined || v === "on" || v === "off" ? EXIT.ok : EXIT.usage;
     }
     case "new":
       console.log(newJill(need(rest[0], "<name>")));
       return EXIT.ok;
-    case "mcp": {
-      const { serveStdio } = await import("./mcp.js");
-      await serveStdio();
+    case "mcp":
+      await (await import("./mcp.js")).serveStdio();
       return -1; // keep running
-    }
     case "__run": {
-      const id = need(rest[0], "<run>");
-      // The runner owns the step process groups: on a stop signal it aborts the
-      // run, which kills every running group (SIGTERM, then SIGKILL), saves the
-      // record as failed and only then exits. A runner that dies anyway is
-      // swept by refreshRecord, which kills the recorded step groups.
+      // The runner owns its step process groups: on a stop signal it aborts the
+      // run, which stops every running group (SIGTERM, then SIGKILL), saves the
+      // record as failed and only then exits.
       const ac = new AbortController();
       const onSignal = (sig: NodeJS.Signals) => {
         if (ac.signal.aborted) return;
         ac.abort(sig);
-        // Last resort if the engine does not wind down.
-        setTimeout(() => process.exit(EXIT.error), 15_000).unref();
+        setTimeout(() => process.exit(EXIT.error), 15_000).unref(); // last resort
       };
-      const sigs: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+      const sigs = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
       for (const s of sigs) process.on(s, onSignal);
       try {
-        const r = await executeRun(id, { signal: ac.signal });
-        return stateExit(r.state);
+        return stateExit((await executeRun(need(rest[0], "<run>"), { signal: ac.signal })).state);
       } finally {
         for (const s of sigs) process.off(s, onSignal);
       }
@@ -313,31 +223,22 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
-const isMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
-const isMainReal = await (async () => {
-  if (!process.argv[1]) return false;
-  const { realpathSync } = await import("node:fs");
-  const { pathToFileURL } = await import("node:url");
+const isMain = (() => {
   try {
-    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+    return !!process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
   } catch {
     return false;
   }
 })();
 
-if (isMain || isMainReal) {
+if (isMain)
   main(process.argv.slice(2)).then(
     (code) => {
       if (code >= 0) process.exitCode = code;
     },
     (e: unknown) => {
-      if (e instanceof UsageError) {
-        console.error(`jills: ${e.message}\n\n${USAGE}`);
-        process.exitCode = EXIT.usage;
-      } else {
-        console.error(`jills: ${(e as Error).message}`);
-        process.exitCode = EXIT.error;
-      }
+      const usage = e instanceof UsageError;
+      console.error(`jills: ${(e as Error).message}${usage ? `\n\n${USAGE}` : ""}`);
+      process.exitCode = usage ? EXIT.usage : EXIT.error;
     },
   );
-}

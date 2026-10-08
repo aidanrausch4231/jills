@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 /** The part of the Jills library this add-on uses (tests pass a fake). */
 export type JillsCore = Pick<
   typeof JillsLib,
-  "suggest" | "start" | "go" | "status" | "listJills" | "dismiss" | "never" | "quiet" | "on" | "lastSuggestion" | "setAuto" | "resultLine" | "TERMINAL"
+  "suggest" | "start" | "go" | "status" | "listJills" | "dismiss" | "never" | "quiet" | "on" | "lastSuggested" | "setAuto" | "resultLine" | "TERMINAL"
 >;
 
 export interface JillsPiOptions {
@@ -260,7 +260,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
         const core = await getCore();
         switch (sub) {
           case "go": {
-            const jill = words[0] ?? core.lastSuggestion(session, { home });
+            const jill = words[0] ?? core.lastSuggested(session, { home })?.jill;
             if (!jill) {
               notify("Jills: nothing suggested in this chat yet; use /jills go <jill> [key=value ...]", "warning");
               return;

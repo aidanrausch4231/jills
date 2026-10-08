@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseJill, v1Refusal } from "../src/jillfile.js";
+import { parseJill, refusal } from "../src/jillfile.js";
 import { start, dryRun, check } from "../src/api.js";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -38,7 +38,7 @@ test("JILL.md parses fields, defaults and pass-through extras", () => {
   assert.deepEqual(j.inputs.map((i) => i.name), ["who", "task"]);
   assert.equal(j.inputs[1]!.required, true);
   assert.equal(j.worktree, true);
-  assert.equal(j.docker, false);
+  assert.equal(j.box, undefined);
   assert.equal(j.machine, "local");
   assert.equal(j.extra.goal, "later-mode");
   const b = j.steps.find((s) => s.name === "b")!;
@@ -63,16 +63,16 @@ test("JILL.md validation errors are clear", () => {
   assert.throws(bad("timeout: forever\nsteps:\n  a: {run: x}"), /bad duration/);
 });
 
-test("docker: true and machine != local are refused clearly", async () => {
-  const d = parseJill("---\nname: d\ndocker: true\nsteps:\n  a: {run: x}\n---\n");
-  assert.match(v1Refusal(d)!, /"docker" isolation extension is not installed/);
+test("box: docker and machine != local are refused clearly", async () => {
+  const d = parseJill("---\nname: d\nbox: docker\nsteps:\n  a: {run: x}\n---\n");
+  assert.match(refusal(d)!, /"docker" isolation extension is not installed/);
   const m = parseJill("---\nname: m\nmachine: gpu-box\nsteps:\n  a: {run: x}\n---\n");
-  assert.match(v1Refusal(m)!, /only machine: local is supported in v1/);
-  assert.equal(v1Refusal(parseJill("---\nname: l\nsteps:\n  a: {run: x}\n---\n")), undefined);
+  assert.match(refusal(m)!, /only machine: local is supported in v1/);
+  assert.equal(refusal(parseJill("---\nname: l\nsteps:\n  a: {run: x}\n---\n")), undefined);
 
   const home = tmpHome();
   const repo = tmpRepo();
-  writeJill(home, "boxed", "docker: true\nsteps:\n  a: {run: echo hi}");
+  writeJill(home, "boxed", "box: docker\nsteps:\n  a: {run: echo hi}");
   writeJill(home, "remote", "machine: build-01\nsteps:\n  a: {run: echo hi}");
   await assert.rejects(start("boxed", { home, cwd: repo }), /"docker" isolation extension is not installed/);
   await assert.rejects(start("remote", { home, cwd: repo }), /only machine: local/);

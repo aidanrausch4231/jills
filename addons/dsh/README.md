@@ -24,14 +24,26 @@ All Jills logic lives in the core library; this package only wires dsh to it.
 
 ## Layout
 
-| Path | Role |
+Every tracked file and why it exists:
+
+| Path | Why |
 |---|---|
-| `src/index.ts` | Host service `jills` (`TypertRemoteService`) with Remote methods `suggest`, `start`, `status`, `dismiss`, `never` |
-| `src/bridge.ts` | Plain Node bridge to the Jills library; one cached card per (session, message) so re-renders never ask Jev twice |
-| `src/types.ts` | Wire types (`SuggestRequest`, `JillsCard`, `RunLine`, ...) |
-| `src/client/` | Browser half: mounts the `jills` Remote, registers a chat node Definition on `user/message` events and the `conversation.chat.node` renderer `jills-suggestion` |
+| `src/index.ts` | Host service `jills` (`TypertRemoteService`) with Remote methods `suggest`, `start`, `status`, `dismiss`, `never`; reads turns and tells the agent through dsh's Session Controller |
+| `src/bridge.ts` | Plain Node bridge to the Jills library (testable without dsh); one cached card per (session, message) so re-renders never ask Jev twice |
+| `src/types.ts` | Wire types (`SuggestRequest`, `JillsCard`, `RunLine`, ...) shared by Host and card; Typert reads them |
+| `src/client/index.tsx` | Browser entry: mounts the `jills` Remote, registers the chat node Definition and renderer |
+| `src/client/model.ts` | Pure browser logic (node Definition on `user/message`, Remote face, dot state); unit-tested from `lib/client.js` |
+| `src/client/Card.tsx` | The card and status line (React, dsh UI primitives) |
 | `cordis.patch.yml` | Bundle patch: `dsh plugin add` activates the package and inserts the `jills` plugin |
-| `scripts/build.mjs` | tsc → Typert contracts (`scripts/contracts.mjs`, dsh's own generator) → Host entry → wrapped browser bundle |
+| `package.json` | Package manifest: exports dsh loads (`lib/*`), dsh bundle/client metadata, dev links to a dsh checkout |
+| `pnpm-workspace.yaml`, `pnpm-lock.yaml` | Standalone pnpm install (the add-on is not part of a dsh workspace) |
+| `tsconfig.base.json` | Shared compiler settings |
+| `tsconfig.json` | Host half: emits `lib/types` declarations (client excluded) |
+| `tsconfig.client.json` | Browser half: type-check only, with DOM libs |
+| `scripts/build.mjs` | tsc → Typert contracts → Host entry → browser bundle in dsh's closure-factory format |
+| `scripts/contracts.mjs` | Runs dsh's own Typert generator on a staged copy (`.typert/`) to make `lib/typert.*` |
+| `.gitignore` | Keeps `lib/`, `.typert/` and `node_modules/` out of git |
+| `test/` | Bridge, client bundle and contract tests; `test/smoke/` is the isolated real-dsh browser smoke |
 
 Messages older than 5 minutes (history reloads) and slash commands never reach Jev.
 
@@ -78,14 +90,11 @@ Set plugin config with a profile patch, for example `- id: jills` / `config: { h
 - **Jev reads the last 3 turns.** For each card the Host reads the Session log with dsh's Session
   Controller (`sessionController.inspect`, which never activates the Agent) and sends Jev the last 3
   typed-user / assistant text turns before the message (`turnsBefore` in `src/bridge.ts`).
-- **The main agent is told when a Jill starts** (Start button or auto mode). dsh's plugin API has no
-  hook that adds text to the current turn's prompt, so the closest supported mechanism is used:
-  `sessionController.resolveAgent(session)` then `agent.inject(message)`, dsh's "queue model-facing
-  context for the next step without waking the agent". The message is a user-role `jills` notice
-  (`[Jills] Jill "x" started as run <id> ... the Jills card ... reports the result ... Do not start it
-  again`); the Session is then flushed so it is durable. It never starts, steers or interrupts a
-  turn: a running agent reads it at its next step, an idle one with the user's next message. If the
-  Agent cannot be reached the run still starts and the card says "The agent was not told: ...".
+- **The main agent is told when a Jill starts** (Start button or auto mode). dsh has no hook that
+  adds text to the current turn, so the Host uses `agent.inject(message)` ("queue model-facing context
+  for the next step without waking the agent") with a user-role `[Jills] Jill "x" started as run <id>
+  ... Do not start it again` notice, then flushes the Session. It never starts, steers or interrupts a
+  turn. If the Agent cannot be reached the run still starts and the card says "The agent was not told".
 - **No workspace folder, no run.** A chat without a working folder gets the card note "open a
   workspace folder first" for Start (and auto mode) and Never; Jills never falls back to the dsh
   Host's own folder.

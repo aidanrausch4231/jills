@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { groupAlive, groupIsOurs, sameProcess } from "./proc.js";
-import { isPidAlive, readJson, sleep, writeJsonAtomic } from "./util.js";
+import { bootId } from "./proc.js";
+import { readJson, sleep, writeJsonAtomic } from "./util.js";
 
 export type RunState = "queued" | "running" | "done" | "failed" | "stuck" | "needs-you";
 export type StepState = "pending" | "running" | "done" | "failed" | "stuck" | "needs-you" | "skipped";
@@ -23,9 +23,6 @@ export interface StepRecord {
   workspace?: string;
   branch?: string;
   commit?: string;
-  pid?: number;
-  /** Start token of the step's process (group leader); see procStartToken. */
-  pidStart?: string;
 }
 
 export interface RunEvent {
@@ -33,6 +30,14 @@ export interface RunEvent {
   type: "started" | "step-started" | "step-done" | "finished" | "failed" | "stuck" | "needs-you";
   step?: string;
   note?: string;
+}
+
+/** Written by the runner every few seconds. mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot). */
+export interface Heartbeat {
+  at: string;
+  mono: string;
+  since: string;
+  bootId?: string;
 }
 
 export interface RunRecord {
@@ -50,33 +55,24 @@ export interface RunRecord {
   branch?: string;
   isolated?: boolean;
   session?: string;
+  /** The runner process (it has JILLS_RUN_ID=<id> in its env when started detached). */
   pid?: number;
-  /** Start token of the runner process; signals go only to this exact process. */
-  pidStart?: string;
-  /** Written by the runner every few seconds: wall time and its own monotonic elapsed time. */
-  heartbeat?: { at: string; elapsedMs: number };
+  heartbeat?: Heartbeat;
   logDir: string;
   steps: Record<string, StepRecord>;
   events: RunEvent[];
   error?: string;
   conflicts?: string[];
-  /** Total time limit as written (Jill timeout or config default_timeout). */
+  /** Total time limit as written, and in ms after defaults and clamping. */
   timeLimit?: string;
-  /** Total time limit actually used, in ms (after defaults and clamping). */
   timeLimitMs?: number;
   /** When the total time limit runs out (ISO time); set when the run starts. */
   deadline?: string;
 }
 
-export function runsDir(home: string): string {
-  return join(home, "runs");
-}
-export function recordPath(home: string, id: string): string {
-  return join(runsDir(home), `${id}.json`);
-}
-export function runLogDir(home: string, id: string): string {
-  return join(runsDir(home), id);
-}
+export const runsDir = (home: string) => join(home, "runs");
+export const recordPath = (home: string, id: string) => join(runsDir(home), `${id}.json`);
+export const runLogDir = (home: string, id: string) => join(runsDir(home), id);
 
 export function saveRecord(home: string, r: RunRecord): void {
   writeJsonAtomic(recordPath(home, r.id), r);
@@ -87,198 +83,91 @@ export function loadRecord(home: string, id: string): RunRecord | undefined {
   return readJson<RunRecord>(recordPath(home, id));
 }
 
+/** Write only the heartbeat; never touches a record that is already terminal on disk. Returns false then. */
+export function saveHeartbeat(home: string, id: string, hb: Heartbeat): boolean {
+  const r = loadRecord(home, id);
+  if (!r || TERMINAL.has(r.state)) return false;
+  r.heartbeat = hb;
+  saveRecord(home, r);
+  return true;
+}
+
 export function listRecords(home: string): RunRecord[] {
   const dir = runsDir(home);
   if (!existsSync(dir)) return [];
-  const out: RunRecord[] = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    const r = readJson<RunRecord>(join(dir, f));
-    if (r) out.push(r);
-  }
-  return out.sort((a, b) => (a.created < b.created ? 1 : -1));
+  const out = readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => readJson<RunRecord>(join(dir, f)));
+  return (out.filter(Boolean) as RunRecord[]).sort((a, b) => (a.created < b.created ? 1 : -1));
 }
 
 const QUEUED_GRACE_MS = 60_000;
-/** A running record this long past its deadline may be stuck (see refreshRecord). */
+/** A running record this long past its deadline may be stuck. */
 export const DEADLINE_GRACE_MS = 30_000;
-/** A heartbeat older than this (wall clock) is stale; stuck needs it stale this long on the observer's own clock too. */
+/** A heartbeat whose monotonic stamp is this old (on the observer's clock) means the runner hangs. */
 export const STALE_MS = 30_000;
-/** Grace between SIGTERM and SIGKILL when an observer stops a runner or its steps. */
-export const KILL_GRACE_MS = 5_000;
 
-export interface RefreshOpts {
-  /** Observer-clock window a stale heartbeat must stay unchanged before stuck (default STALE_MS). */
-  staleMs?: number;
-  /** Grace between SIGTERM and SIGKILL (default KILL_GRACE_MS). */
-  killGraceMs?: number;
-}
-
-/** Is the recorded runner still the same live process? */
-function runnerAlive(r: RunRecord): boolean {
-  if (r.pid === undefined) return false;
-  if (r.pidStart) return sameProcess(r.pid, r.pidStart);
-  return isPidAlive(r.pid); // records from before start tokens
-}
-
-/** First time (observer's monotonic clock) each run's current stale heartbeat was seen. */
-const staleSeen = new Map<string, { beat: string; since: number }>();
-
-/**
- * Decide stuck for a running record whose runner is alive. The wall-clock
- * deadline alone never decides it (a suspend or clock jump moves wall time
- * while the runner's own timer, on the monotonic clock, has not fired):
- * - the runner's heartbeat says its own elapsed time is past the limit → stuck;
- * - a fresh heartbeat → alive and progressing → not stuck;
- * - a stale heartbeat → stuck only after it stays unchanged for staleMs of this
- *   observer's monotonic time (a resumed runner beats again within seconds).
- */
-function isStuck(r: RunRecord, o: RefreshOpts, now = Date.now()): boolean {
-  if (r.state !== "running" || !r.deadline) return false;
-  const t = Date.parse(r.deadline);
-  if (!Number.isFinite(t) || now <= t + DEADLINE_GRACE_MS) {
-    staleSeen.delete(r.id);
-    return false;
-  }
-  const hb = r.heartbeat;
-  if (hb && r.timeLimitMs !== undefined && hb.elapsedMs > r.timeLimitMs + DEADLINE_GRACE_MS) return true;
-  const staleMs = o.staleMs ?? STALE_MS;
-  const beat = hb ? hb.at : "none";
-  if (hb && now - Date.parse(hb.at) <= staleMs) {
-    staleSeen.delete(r.id);
-    return false;
-  }
-  const seen = staleSeen.get(r.id);
-  const mono = performance.now();
-  if (!seen || seen.beat !== beat) {
-    staleSeen.set(r.id, { beat, since: mono });
-    return staleMs <= 0;
-  }
-  return mono - seen.since >= staleMs;
-}
-
-/** Runs being stopped by this process: SIGTERM sent, SIGKILL pending. */
-const reaping = new Map<string, Promise<void>>();
-
-/** Resolves once this process has finished stopping run id (no-op when it is not). */
-export function reaped(id: string): Promise<void> {
-  return reaping.get(id) ?? Promise.resolve();
-}
-
-interface Target {
-  pid: number;
-  token?: string;
-  group: boolean;
-}
-
-function targetOurs(t: Target): boolean {
-  return t.group ? groupIsOurs(t.pid, t.token) : t.pid !== process.pid && sameProcess(t.pid, t.token);
-}
-function targetAlive(t: Target): boolean {
-  return t.group ? groupAlive(t.pid) && groupIsOurs(t.pid, t.token) : sameProcess(t.pid, t.token);
-}
-function signal(t: Target, sig: NodeJS.Signals): void {
-  if (!targetOurs(t)) return; // never signal a recycled pid
+function pidAlive(pid: number | undefined): boolean {
+  if (!pid) return false;
   try {
-    process.kill(t.group ? -t.pid : t.pid, sig);
-  } catch {
-    /* already gone */
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
 /**
- * Stop targets without killing blindly: identity-checked SIGTERM now, then
- * identity-checked SIGKILL for survivors after the grace. Once they are gone,
- * save `final` again in case a dying runner wrote over it.
+ * Why an observer should call this running record stuck, or undefined. Stateless:
+ * - the runner is gone (another boot, or its pid no longer exists);
+ * - past the deadline (wall clock) and the runner's own monotonic time is past
+ *   the limit, or its stamp stopped advancing on this observer's monotonic clock.
+ * A suspend moves wall time but not the monotonic clock, so it alone never decides it.
  */
-function stopTargets(home: string, final: RunRecord, targets: Target[], graceMs: number): void {
-  const mine = targets.filter(targetOurs);
-  for (const t of mine) signal(t, "SIGTERM");
-  if (!mine.length) return;
-  const job = (async () => {
-    const t0 = performance.now();
-    while (mine.some(targetAlive) && performance.now() - t0 < graceMs) await sleep(100);
-    for (const t of mine) if (targetAlive(t)) signal(t, "SIGKILL");
-    for (let i = 0; i < 20 && mine.some(targetAlive); i++) await sleep(50);
-    const disk = loadRecord(home, final.id);
-    if (disk && (disk.state !== final.state || disk.finished !== final.finished)) saveRecord(home, final);
-  })().finally(() => reaping.delete(final.id));
-  reaping.set(final.id, job);
-}
-
-function stepTargets(r: RunRecord): Target[] {
-  return Object.values(r.steps)
-    .filter((s) => s.state === "running" && s.pid)
-    .map((s) => ({ pid: s.pid!, token: s.pidStart, group: true }));
+export function stuckReason(r: RunRecord, staleMs = STALE_MS): string | undefined {
+  const hb = r.heartbeat;
+  const sameBoot = !hb?.bootId || hb.bootId === bootId();
+  if (!sameBoot || (r.pid !== undefined && !pidAlive(r.pid))) return "the runner process is gone";
+  if (!r.deadline || Date.now() <= Date.parse(r.deadline) + DEADLINE_GRACE_MS) return undefined;
+  if (!hb?.mono || !hb.since) return `total time limit ${r.timeLimit ?? "?"} passed and the runner never beat`;
+  const ns = (ms: number) => BigInt(Math.round(ms)) * 1_000_000n;
+  if (r.timeLimitMs !== undefined && BigInt(hb.mono) - BigInt(hb.since) > ns(r.timeLimitMs + DEADLINE_GRACE_MS))
+    return `total time limit ${r.timeLimit ?? "?"} passed and the runner did not stop the run`;
+  if (process.hrtime.bigint() - BigInt(hb.mono) > ns(staleMs)) return `total time limit ${r.timeLimit ?? "?"} passed and the runner stopped beating`;
+  return undefined;
 }
 
 /**
- * Read a record and notice a dead or stuck runner: a running record whose
- * runner is gone (or a queued one that never started) becomes failed; one that
- * is stuck (see isStuck) becomes stuck. Processes are stopped with SIGTERM,
- * then SIGKILL after a grace, and only after their identity is checked.
+ * Read a record and notice a dead or hung runner. Observers never signal
+ * anything: a queued run whose runner never started becomes failed; a running
+ * one with a stuckReason becomes stuck (`jills stop <id>` stops its processes).
  */
-export function refreshRecord(home: string, id: string, o: RefreshOpts = {}): RunRecord | undefined {
+export function refreshRecord(home: string, id: string, staleMs?: number): RunRecord | undefined {
   const r = loadRecord(home, id);
   if (!r || TERMINAL.has(r.state)) return r;
-  if (reaping.has(id)) return r;
-  const dead =
-    (r.state === "running" && r.pid !== undefined && !runnerAlive(r)) ||
-    (r.state === "queued" && Date.now() - Date.parse(r.created) > QUEUED_GRACE_MS && !runnerAlive(r));
-  if (!dead && !isStuck(r, o)) return r;
-  // Re-read right before writing to lower the race with a finishing runner.
-  const again = loadRecord(home, id);
-  if (!again || TERMINAL.has(again.state)) return again;
-  if (!dead) return markStuck(home, again, o);
-  const wasQueued = again.state === "queued";
-  const targets = stepTargets(again);
-  again.state = "failed";
-  again.error = wasQueued ? "runner never started" : "runner process exited without finishing the run";
-  again.finished = new Date().toISOString();
-  // The runner is gone, but its step process groups may still be running and
-  // editing the worktree: stop each step group still marked running.
-  for (const s of Object.values(again.steps)) {
-    if (s.state !== "running") continue;
-    s.state = "failed";
-    s.reason = "runner died; step process group stopped";
-    s.finished = again.finished;
-  }
-  again.events.push({ at: again.finished, type: "failed", note: again.error });
-  saveRecord(home, again);
-  stopTargets(home, again, targets, o.killGraceMs ?? KILL_GRACE_MS);
-  return again;
-}
-
-/**
- * The runner let the run go past its total time limit (it hangs or ignored its
- * timer): record stuck, then stop the runner and every step group still
- * running (SIGTERM, SIGKILL after a grace, identity-checked so a recycled pid
- * is never hit). The stuck record is saved again after they are gone, so a
- * dying runner cannot leave its own outcome behind.
- */
-function markStuck(home: string, r: RunRecord, o: RefreshOpts): RunRecord {
-  const targets = stepTargets(r);
-  if (r.pid && r.pid !== process.pid) targets.unshift({ pid: r.pid, token: r.pidStart, group: false });
   const at = new Date().toISOString();
-  for (const s of Object.values(r.steps)) {
-    if (s.state !== "running") continue;
-    s.state = "stuck";
-    s.reason = "run passed its total time limit; step process group stopped";
-    s.finished = at;
+  if (r.state === "queued") {
+    if (Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS) return r;
+    r.state = "failed";
+    r.error = "runner never started";
+  } else {
+    const why = stuckReason(r, staleMs);
+    if (!why) return r;
+    r.state = "stuck";
+    r.error = `${why}; run \`jills stop ${r.id}\` to stop its processes`;
+    for (const s of Object.values(r.steps)) if (s.state === "running") Object.assign(s, { state: "stuck", reason: why, finished: at });
   }
-  r.state = "stuck";
-  r.error = `total time limit ${r.timeLimit ?? "?"} passed and the runner did not stop the run; runner and steps stopped`;
   r.finished = at;
-  r.events.push({ at, type: "stuck", note: r.error });
+  r.events.push({ at, type: r.state as RunEvent["type"], note: r.error });
+  const again = loadRecord(home, id); // lower the race with a finishing runner
+  if (!again || TERMINAL.has(again.state)) return again;
   saveRecord(home, r);
-  staleSeen.delete(r.id);
-  stopTargets(home, r, targets, o.killGraceMs ?? KILL_GRACE_MS);
   return r;
 }
 
-export interface WaitOpts extends RefreshOpts {
+export interface WaitOpts {
   timeoutMs?: number;
   pollMs?: number;
+  /** Observer-clock age of a heartbeat stamp that counts as stopped (default STALE_MS). */
+  staleMs?: number;
   onUpdate?: (r: RunRecord) => void;
 }
 
@@ -287,12 +176,8 @@ export async function waitForRun(home: string, id: string, o: WaitOpts = {}): Pr
   const t0 = Date.now();
   let lastEvents = -1;
   for (;;) {
-    let r = refreshRecord(home, id, o);
+    const r = refreshRecord(home, id, o.staleMs);
     if (!r) throw new Error(`no run ${id}`);
-    if (TERMINAL.has(r.state) && reaping.has(id)) {
-      await reaped(id);
-      r = loadRecord(home, id) ?? r;
-    }
     if (r.events.length !== lastEvents) {
       lastEvents = r.events.length;
       o.onUpdate?.(r);

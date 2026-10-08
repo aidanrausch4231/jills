@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, afterEach, test } from "node:test";
-import { runNow, start, status, suggest } from "../src/api.js";
+import { runNow, start, status, stop, suggest } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
 import { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
 import { loadRecord } from "../src/runs.js";
@@ -172,15 +172,13 @@ after(() => {
   }
 });
 
-async function startLong(home: string, ws: string, needStepPid: boolean) {
+async function startLong(home: string, ws: string) {
   writeJill(home, "long", LONG_STEP);
   const rec = await start("long", { home, cwd: ws });
   const pidFile = join(ws, "child.pid");
   await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", 15_000, "step to start");
   const childPid = Number(readFileSync(pidFile, "utf8").trim());
   spawned.push(childPid);
-  // The step's process group id is recorded at spawn, not when the step ends.
-  if (needStepPid) await until(() => loadRecord(home, rec.id)?.steps.long?.pid !== undefined, 5_000, "step pid in record");
   const r = loadRecord(home, rec.id)!;
   assert.equal(r.steps.long!.state, "running");
   return { id: rec.id, runnerPid: r.pid!, childPid };
@@ -189,7 +187,7 @@ async function startLong(home: string, ws: string, needStepPid: boolean) {
 test("SIGTERM to the runner kills step process groups and records the run as failed", async () => {
   const home = tmpHome();
   const ws = tmp();
-  const { id, runnerPid, childPid } = await startLong(home, ws, false);
+  const { id, runnerPid, childPid } = await startLong(home, ws);
   assert.ok(pidAlive(childPid));
   process.kill(runnerPid, "SIGTERM");
   // the runner itself writes the terminal state (no refresh sweep involved)
@@ -199,16 +197,19 @@ test("SIGTERM to the runner kills step process groups and records the run as fai
   await until(() => !pidAlive(runnerPid), 10_000, "runner to exit");
 });
 
-test("a runner killed with SIGKILL: refresh sweeps the recorded step process groups", async () => {
+test("a runner killed with SIGKILL: status marks it stuck without signaling; stop kills the orphaned step", async () => {
   const home = tmpHome();
   const ws = tmp();
-  const { id, runnerPid, childPid } = await startLong(home, ws, true);
+  const { id, runnerPid, childPid } = await startLong(home, ws);
   process.kill(runnerPid, "SIGKILL");
   await until(() => !pidAlive(runnerPid), 10_000, "runner to die");
-  assert.ok(pidAlive(childPid), "orphaned step still running before the sweep");
   const r = status(id, { home })!;
-  assert.equal(r.state, "failed");
-  assert.equal(r.steps.long!.state, "failed");
-  assert.match(r.steps.long!.reason!, /process group stopped/);
+  assert.equal(r.state, "stuck");
+  assert.equal(r.steps.long!.state, "stuck");
+  assert.match(r.error!, /runner process is gone.*jills stop/);
+  await sleep(200);
+  assert.ok(pidAlive(childPid), "observers never signal: the orphaned step still runs");
+  const s = await stop(id, { home });
+  assert.ok(s.pids.includes(childPid), "the step's grandchild carries JILLS_RUN_ID");
   await until(() => !pidAlive(childPid), 10_000, "orphaned step to be killed");
 });

@@ -18,7 +18,7 @@ function jills(home: string, args: string[], opts: { cwd?: string; input?: strin
 test("CLI exit codes and core commands", () => {
   const home = tmpHome();
   cpSync(join(root, "examples", "hello"), join(home, "jills", "hello"), { recursive: true });
-  writeJill(home, "boxed", "docker: true\nsteps:\n  a: {run: echo}");
+  writeJill(home, "boxed", "box: docker\nsteps:\n  a: {run: echo}");
   writeJill(home, "fails", "worktree: false\nsteps:\n  a: {run: exit 9}");
   const repo = tmpRepo();
 

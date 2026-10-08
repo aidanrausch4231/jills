@@ -39,14 +39,14 @@ test("atomic JSON writes: readers never see a partial file, no temp files left",
   assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".tmp")), []);
 });
 
-test("a running record whose runner died becomes failed", () => {
+test("a running record whose runner died becomes stuck (observers never signal)", () => {
   const home = tmpHome();
   const r: RunRecord = { version: 1, id: "dead-1", jill: "x", jillPath: "p", inputs: {}, state: "running", created: new Date().toISOString(), repo: "/", pid: 999_999_99, logDir: "/tmp", steps: {}, events: [] };
   saveRecord(home, r);
   const after = refreshRecord(home, "dead-1")!;
-  assert.equal(after.state, "failed");
-  assert.match(after.error!, /runner process exited/);
-  assert.equal(loadRecord(home, "dead-1")!.state, "failed");
+  assert.equal(after.state, "stuck");
+  assert.match(after.error!, /runner process is gone; run `jills stop dead-1`/);
+  assert.equal(loadRecord(home, "dead-1")!.state, "stuck");
   assert.equal(loadRecord(home, "../etc/passwd"), undefined);
 });
 

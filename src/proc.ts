@@ -1,7 +1,8 @@
-import { execFileSync, spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { StepRunResult } from "./plugins/types.js";
+import { sleep } from "./util.js";
 
 export interface SpawnOpts {
   cmd: string;
@@ -11,27 +12,19 @@ export interface SpawnOpts {
   env?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Grace period between SIGTERM and SIGKILL. */
-  killGraceMs?: number;
-  /** Called with the pid (= process group id) right after spawn. */
-  onSpawn?: (pid: number) => void;
 }
 
-export function killGroup(pid: number, sig: NodeJS.Signals) {
+function killGroup(pid: number, sig: NodeJS.Signals) {
   try {
     process.kill(-pid, sig);
   } catch {
-    try {
-      process.kill(pid, sig);
-    } catch {
-      /* already gone */
-    }
+    /* already gone */
   }
 }
 
 /**
- * Run a process in its own process group, output to logPath.
- * On timeout or abort the whole group gets SIGTERM, then SIGKILL.
+ * Run a process in its own process group, output to logPath. Only the runner
+ * calls this: on timeout or abort it stops the group it spawned (SIGTERM, then SIGKILL).
  */
 export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
   mkdirSync(dirname(o.logPath), { recursive: true });
@@ -40,53 +33,27 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
     let timedOut = false;
     let aborted = false;
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
-    let killTimer: NodeJS.Timeout | undefined;
-    const child = spawn(o.cmd, o.args, {
-      cwd: o.cwd,
-      env: { ...process.env, ...(o.env ?? {}) },
-      stdio: ["ignore", fd, fd],
-      detached: true,
-    });
+    const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ["ignore", fd, fd], detached: true });
     const pid = child.pid;
-    if (pid) {
-      try {
-        o.onSpawn?.(pid);
-      } catch {
-        /* never break a step */
-      }
-    }
     const stop = () => {
       if (!pid) return;
       killGroup(pid, "SIGTERM");
-      killTimer = setTimeout(() => killGroup(pid, "SIGKILL"), o.killGraceMs ?? 2000);
-      killTimer.unref();
+      setTimeout(() => killGroup(pid, "SIGKILL"), 2000).unref();
     };
     const onAbort = () => {
       aborted = true;
       stop();
     };
-    if (o.timeoutMs && o.timeoutMs > 0)
-      timer = setTimeout(() => {
-        timedOut = true;
-        stop();
-      }, o.timeoutMs);
-    if (o.signal) {
-      if (o.signal.aborted) onAbort();
-      else o.signal.addEventListener("abort", onAbort, { once: true });
-    }
+    const timer = o.timeoutMs && o.timeoutMs > 0 ? setTimeout(() => ((timedOut = true), stop()), o.timeoutMs) : undefined;
+    if (o.signal?.aborted) onAbort();
+    else o.signal?.addEventListener("abort", onAbort, { once: true });
     const finish = (r: StepRunResult) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
       o.signal?.removeEventListener("abort", onAbort);
-      // Make sure no grandchild survives a timeout/abort.
-      if ((timedOut || aborted) && pid) killGroup(pid, "SIGKILL");
-      try {
-        closeSync(fd);
-      } catch {
-        /* ignore */
-      }
+      if ((timedOut || aborted) && pid) killGroup(pid, "SIGKILL"); // no grandchild survives
+      closeSync(fd);
       resolve(r);
     };
     child.on("error", (e) => {
@@ -95,66 +62,61 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
       } catch {
         /* ignore */
       }
-      finish({ exitCode: 127, timedOut, aborted, pid });
+      finish({ exitCode: 127, timedOut, aborted });
     });
-    child.on("exit", (code, sig) => {
-      finish({ exitCode: code, timedOut, aborted, signal: sig ?? undefined, pid });
-    });
+    child.on("exit", (code, sig) => finish({ exitCode: code, timedOut, aborted, signal: sig ?? undefined }));
   });
 }
 
-/**
- * A token that names one process instance: its start time. Linux reads
- * /proc/<pid>/stat (start time in clock ticks since boot); elsewhere `ps -o lstart=`.
- * A recycled pid gets a different token. undefined = no such process / unknown.
- */
-export function procStartToken(pid: number | undefined): string | undefined {
-  if (!pid || pid <= 0) return undefined;
-  if (process.platform === "linux") {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      // Field 2 (comm) may hold spaces and parens; the rest follows the last ")".
-      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      const start = rest[19]; // field 22: starttime
-      return start ? `linux:${start}` : undefined;
-    } catch {
-      return undefined;
-    }
-  }
+/** This boot's id (Linux); undefined elsewhere. */
+export function bootId(): string | undefined {
   try {
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return out ? `ps:${out}` : undefined;
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   } catch {
     return undefined;
   }
 }
 
-/** True only when pid is alive AND is the same process instance as token. */
-export function sameProcess(pid: number | undefined, token: string | undefined): boolean {
-  if (!pid || !token) return false;
-  return procStartToken(pid) === token;
+/** Pids whose environment holds JILLS_RUN_ID=<runId> (the runner, its steps and their children). */
+export function taggedPids(runId: string): number[] {
+  const tag = `JILLS_RUN_ID=${runId}`;
+  const out: number[] = [];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const pid = Number(e);
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+    try {
+      if (readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(tag)) out.push(pid);
+    } catch {
+      /* gone or not ours */
+    }
+  }
+  return out;
 }
 
 /**
- * May we signal the process group led by pid (recorded with token)? Yes when
- * the leader is still the recorded process, or when the leader is gone (a pid
- * still used as a group id is never handed out again, so the group can only
- * be ours). No when the pid now names another process, or when no token was
- * recorded and the leader is alive (identity cannot be checked).
+ * `jills stop`: SIGTERM every process tagged with this run id, then SIGKILL the
+ * ones still tagged after the grace. Nothing else is ever signaled; a record
+ * from another boot (bootId differs) signals nothing. Returns the pids signaled.
  */
-export function groupIsOurs(pid: number | undefined, token: string | undefined): boolean {
-  if (!pid || pid <= 1) return false;
-  const now = procStartToken(pid);
-  if (now === undefined) return true;
-  return token !== undefined && now === token;
+export async function stopTagged(runId: string, recordedBoot: string | undefined, graceMs = 3000): Promise<number[]> {
+  if (recordedBoot && recordedBoot !== bootId()) return [];
+  const hit = taggedPids(runId);
+  for (const pid of hit) signal(pid, "SIGTERM");
+  for (let t = 0; t < graceMs && taggedPids(runId).length; t += 100) await sleep(100);
+  for (const pid of taggedPids(runId)) signal(pid, "SIGKILL"); // re-scanned: a recycled pid is not tagged
+  return hit;
 }
 
-/** Does any process in group pid still exist? */
-export function groupAlive(pid: number): boolean {
+function signal(pid: number, sig: NodeJS.Signals) {
   try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
+    process.kill(pid, sig);
+  } catch {
+    /* already gone */
   }
 }

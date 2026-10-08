@@ -4,12 +4,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { go, lastSuggested, runNow, start, suggest, wait } from "../src/api.js";
+import { go, lastSuggested, runNow, start, stop, suggest, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
 import { parseJevReply, setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
 import { loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
 import { loadSession } from "../src/session.js";
-import { procStartToken } from "../src/proc.js";
+import { bootId } from "../src/proc.js";
 import { sleep } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -126,15 +126,17 @@ test("config default_timeout applies when the Jill sets none -> stuck", async ()
   assert.match(w.record.error ?? "", /total time limit 1s reached/);
 });
 
-test("jills wait reports stuck when a hung runner passes its deadline (no hang forever)", async () => {
+test("jills wait reports stuck when a hung runner passes its deadline (no hang forever); stop then ends it", async () => {
   const home = tmpHome();
   mkdirSync(join(home, "runs"), { recursive: true });
-  // A "runner" that ignores its timer, and a step process group it left running.
-  const runner = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
-  const step = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+  // A "runner" that ignores its timer, and a step it left running, both tagged with the run id.
+  const env = { ...process.env, JILLS_RUN_ID: "hung-1" };
+  const runner = spawn("sleep", ["60"], { detached: true, stdio: "ignore", env });
+  const step = spawn("sleep", ["60"], { detached: true, stdio: "ignore", env });
   runner.unref();
   step.unref();
   const past = new Date(Date.now() - 5 * 60_000).toISOString();
+  const stamp = String(process.hrtime.bigint() - 120_000_000_000n);
   const rec: RunRecord = {
     version: 1,
     id: "hung-1",
@@ -146,22 +148,26 @@ test("jills wait reports stuck when a hung runner passes its deadline (no hang f
     started: past,
     repo: tmp(),
     pid: runner.pid,
-    pidStart: procStartToken(runner.pid),
+    heartbeat: { at: past, mono: stamp, since: stamp, bootId: bootId() },
     logDir: join(home, "runs", "hung-1"),
-    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running", pid: step.pid, pidStart: procStartToken(step.pid) } },
+    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running" } },
     events: [],
     timeLimit: "1m",
     deadline: new Date(Date.now() - 2 * 60_000).toISOString(),
   };
   saveRecord(home, rec);
-  const w = await wait("hung-1", { home, timeoutMs: 10_000, pollMs: 50, staleMs: 200, killGraceMs: 500 });
+  const w = await wait("hung-1", { home, timeoutMs: 10_000, pollMs: 50 });
   assert.equal(w.timedOut, false, "wait must not hang");
   assert.equal(w.record.state, "stuck");
   assert.match(w.line, /stuck/);
   assert.equal(loadRecord(home, "hung-1")!.steps.a!.state, "stuck");
+  assert.equal(pidAlive(runner.pid!), true, "wait never signals");
+  const s = await stop("hung-1", { home });
+  assert.equal(s.pids.length, 2);
   for (let i = 0; i < 40 && (pidAlive(runner.pid!) || pidAlive(step.pid!)); i++) await sleep(50);
-  assert.equal(pidAlive(runner.pid!), false, "hung runner killed");
-  assert.equal(pidAlive(step.pid!), false, "step group killed");
+  assert.equal(pidAlive(runner.pid!), false, "hung runner stopped");
+  assert.equal(pidAlive(step.pid!), false, "step stopped");
+  assert.equal(loadRecord(home, "hung-1")!.state, "stuck", "stop keeps the terminal record");
   assert.ok(recordPath(home, "hung-1"));
 });
 

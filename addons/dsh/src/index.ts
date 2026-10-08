@@ -1,6 +1,7 @@
 /** Jills for dsh: a Host service under the `jills` Remote namespace. The browser card calls it. */
 import { randomUUID } from 'node:crypto'
-import { Context, Remote, TypertRemoteService } from './dsh.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { JillsBridge, loadCore, turnsBefore, type AgentPort } from './bridge.ts'
 import type { CardAction, JillsCard, RunLine, StartRequest, SuggestRequest } from './types.ts'
 
@@ -44,24 +45,13 @@ interface SessionsLike {
  * and the card never mistakes it for a typed message.
  */
 function jillsNotice(text: string, summary: string): unknown {
-  const message = {
-    role: 'user',
-    content: [Object.freeze({ type: 'text', text })],
-    source: Object.freeze({ kind: 'jills', form: 'notice', summary: summary.slice(0, 120) }),
-    id: randomUUID(),
-  }
-  Object.freeze(message.content)
-  return Object.freeze(message)
+  const content = Object.freeze([Object.freeze({ type: 'text', text })])
+  const source = Object.freeze({ kind: 'jills', form: 'notice', summary: summary.slice(0, 120) })
+  return Object.freeze({ role: 'user', content, source, id: randomUUID() })
 }
 
-/**
- * Session access through dsh's Session Controller:
- * - recent turns: `sessionController.inspect()` (reads the log; never activates the Agent);
- * - telling the agent: `agent.inject()` = dsh's "queue model-facing context for the next
- *   pre-step without waking the driver". It never starts or steers a turn; the agent reads
- *   it at its next step (now if running, else with the user's next message). The Session is
- *   flushed so the notice is durable.
- */
+/** Session access through dsh's Session Controller: `inspect()` reads turns (never activates the
+ * Agent); `agent.inject()` queues the notice without starting or steering a turn (see README). */
 function agentPort(ctx: Context): AgentPort {
   let controller: SessionControllerLike | undefined
   let sessions: SessionsLike | undefined

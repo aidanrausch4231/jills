@@ -4,98 +4,61 @@ import { z } from "zod";
 import { listJills, start, status, suggest, wait, type BaseOpts } from "./api.js";
 import { resultLine } from "./runs.js";
 
-function text(t: string, isError = false) {
-  return { content: [{ type: "text" as const, text: t }], ...(isError ? { isError: true } : {}) };
-}
+const json = (v: unknown) => JSON.stringify(v, null, 2);
+const turn = z.object({ role: z.enum(["user", "assistant"]), text: z.string() });
 
 /** MCP tools: list_jills, suggest_jill, start_jill, jill_status, wait_for_jill. */
 export function createMcpServer(o: BaseOpts = {}): McpServer {
   const server = new McpServer({ name: "jills", version: "0.1.0" });
-
-  server.registerTool(
-    "list_jills",
-    { description: "List saved Jills (name, when to use, description, inputs).", inputSchema: {} },
-    async () => text(JSON.stringify(await listJills(o), null, 2)),
-  );
-
-  server.registerTool(
-    "suggest_jill",
-    {
-      description: "Ask Jev whether a chat message is a new task that fits a saved Jill. Applies the per-chat anti-nag rules.",
-      inputSchema: {
-        session: z.string().describe("Chat session id"),
-        message: z.string().describe("The new user message"),
-        recent: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string() })).optional().describe("Last turns before the message"),
-        repo: z.string().optional(),
+  // name, description, input schema, handler → text (a throw becomes an error result)
+  const tools: [string, string, z.ZodRawShape, (a: any) => Promise<string>][] = [
+    ["list_jills", "List saved Jills (name, when to use, description, inputs).", {}, async () => json(await listJills(o))],
+    [
+      "suggest_jill",
+      "Ask Jev whether a chat message is a new task that fits a saved Jill. Applies the per-chat anti-nag rules.",
+      { session: z.string().describe("Chat session id"), message: z.string().describe("The new user message"), recent: z.array(turn).optional().describe("Last turns before the message"), repo: z.string().optional() },
+      async (a) => json(await suggest({ ...o, session: a.session, message: a.message, recent: a.recent, repo: a.repo })),
+    ],
+    [
+      "start_jill",
+      "Start a saved Jill as a separate, isolated run. Returns the run id at once; the run keeps going in the background.",
+      { jill: z.string(), inputs: z.record(z.string()).optional(), repo: z.string().optional().describe("Repo folder to branch the worktree from (default: server cwd)"), session: z.string().optional() },
+      async (a) => {
+        const r = await start(a.jill, { ...o, inputs: a.inputs, cwd: a.repo, session: a.session }).catch((e: Error) => {
+          throw new Error(`Could not start Jill "${a.jill}": ${e.message}`);
+        });
+        return `Started Jill "${r.jill}" as run ${r.id}.\nNow run \`jills wait ${r.id}\` in the background (e.g. Bash with run_in_background) and tell the user its one-line result (branch + logs) when it finishes. Do not merge anything yourself.`;
       },
-    },
-    async (a) => {
-      try {
-        return text(JSON.stringify(await suggest({ ...o, session: a.session, message: a.message, recent: a.recent, repo: a.repo }), null, 2));
-      } catch (e) {
-        return text((e as Error).message, true);
-      }
-    },
-  );
-
-  server.registerTool(
-    "start_jill",
-    {
-      description: "Start a saved Jill as a separate, isolated run. Returns the run id at once; the run keeps going in the background.",
-      inputSchema: {
-        jill: z.string(),
-        inputs: z.record(z.string()).optional(),
-        repo: z.string().optional().describe("Repo folder to branch the worktree from (default: server cwd)"),
-        session: z.string().optional(),
-      },
-    },
-    async (a) => {
-      try {
-        const r = await start(a.jill, { ...o, inputs: a.inputs, cwd: a.repo, session: a.session });
-        return text(
-          `Started Jill "${r.jill}" as run ${r.id}.\n` +
-            `Now run \`jills wait ${r.id}\` in the background (e.g. Bash with run_in_background) and tell the user its one-line result (branch + logs) when it finishes. ` +
-            `Do not merge anything yourself.`,
-        );
-      } catch (e) {
-        return text(`Could not start Jill "${a.jill}": ${(e as Error).message}`, true);
-      }
-    },
-  );
-
-  server.registerTool(
-    "jill_status",
-    { description: "Status of one run (by id) or of recent runs.", inputSchema: { run: z.string().optional() } },
-    async (a) => {
-      if (a.run) {
+    ],
+    [
+      "jill_status",
+      "Status of one run (by id) or of recent runs.",
+      { run: z.string().optional() },
+      async (a) => {
+        if (!a.run) return status(undefined, o).slice(0, 20).map(resultLine).join("\n") || "no runs";
         const r = status(a.run, o);
-        if (!r) return text(`no run ${a.run}`, true);
-        return text(JSON.stringify({ line: resultLine(r), state: r.state, steps: Object.values(r.steps).map((s) => ({ key: s.key, state: s.state, reason: s.reason, log: s.log })) }, null, 2));
-      }
-      return text(status(undefined, o).slice(0, 20).map(resultLine).join("\n") || "no runs");
-    },
-  );
-
-  server.registerTool(
-    "wait_for_jill",
-    {
-      description: "Wait (up to timeout_seconds, default 600) for a run to finish; returns the one-line result. Prefer `jills wait <id>` in a background shell for long runs.",
-      inputSchema: { run: z.string(), timeout_seconds: z.number().positive().optional() },
-    },
-    async (a) => {
+        if (!r) throw new Error(`no run ${a.run}`);
+        return json({ line: resultLine(r), state: r.state, steps: Object.values(r.steps).map((s) => ({ key: s.key, state: s.state, reason: s.reason, log: s.log })) });
+      },
+    ],
+    [
+      "wait_for_jill",
+      "Wait (up to timeout_seconds, default 600) for a run to finish; returns the one-line result. Prefer `jills wait <id>` in a background shell for long runs.",
+      { run: z.string(), timeout_seconds: z.number().positive().optional() },
+      async (a) => (await wait(a.run, { ...o, timeoutMs: (a.timeout_seconds ?? 600) * 1000 })).line,
+    ],
+  ];
+  for (const [name, description, inputSchema, fn] of tools)
+    server.registerTool(name, { description, inputSchema }, async (a: unknown) => {
       try {
-        const w = await wait(a.run, { ...o, timeoutMs: (a.timeout_seconds ?? 600) * 1000 });
-        return text(w.line);
+        return { content: [{ type: "text" as const, text: await fn(a) }] };
       } catch (e) {
-        return text((e as Error).message, true);
+        return { content: [{ type: "text" as const, text: (e as Error).message }], isError: true };
       }
-    },
-  );
-
+    });
   return server;
 }
 
 export async function serveStdio(o: BaseOpts = {}): Promise<void> {
-  const server = createMcpServer(o);
-  await server.connect(new StdioServerTransport());
+  await createMcpServer(o).connect(new StdioServerTransport());
 }

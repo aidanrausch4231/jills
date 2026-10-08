@@ -1,5 +1,6 @@
-/** Test-only dsh plugin for the smoke: a scripted model (never contacts a provider) and one chat
- * whose user message Jev should match to the `hello` Jill. Pattern from switchboard's scripted.mjs. */
+/** Test-only dsh plugin for the smoke: a scripted model (never contacts a provider), one chat
+ * whose user message Jev should match to the `hello` Jill and, when JILLS_SMOKE_DIRECT_TITLE is set,
+ * a second chat for a worktree: false Jill. Pattern from switchboard's scripted.mjs. */
 import { randomUUID } from 'node:crypto'
 import { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -32,20 +33,24 @@ export async function apply(ctx) {
       await new Promise(resolve => setTimeout(resolve, 250))
     }
   }
+  const chats = [[title, earlier ? [earlier, message] : [message]]]
+  if (process.env.JILLS_SMOKE_DIRECT_TITLE) chats.push([process.env.JILLS_SMOKE_DIRECT_TITLE, [process.env.JILLS_SMOKE_DIRECT_MESSAGE]])
   const lease = await ctx.agentPresets.acquireScope(preset.id)
   try {
-    const handle = await ctx.agents.create({
-      sessionId: `jills-smoke-${randomUUID()}`, meta: { cwd, agentPreset: preset.id },
-      agentOptions: { provider: 'jills-scripted', model: 'scripted' },
-      setup: async (scope) => { await ctx.agentPresets.mount(scope, preset.id) },
-    })
-    try {
-      // An earlier turn first, so Jev's "last turns" for the hello message are not empty.
-      for (const text of earlier ? [earlier, message] : [message]) {
-        handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
-        await handle.agent.whenIdle()
-      }
-      ctx.sessionTitle.rename(handle.agent.session, title)
-    } finally { await handle.dispose() }
+    for (const [name, texts] of chats) {
+      const handle = await ctx.agents.create({
+        sessionId: `jills-smoke-${randomUUID()}`, meta: { cwd, agentPreset: preset.id },
+        agentOptions: { provider: 'jills-scripted', model: 'scripted' },
+        setup: async (scope) => { await ctx.agentPresets.mount(scope, preset.id) },
+      })
+      try {
+        // An earlier turn first, so Jev's "last turns" for the hello message are not empty.
+        for (const text of texts) {
+          handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+          await handle.agent.whenIdle()
+        }
+        ctx.sessionTitle.rename(handle.agent.session, name)
+      } finally { await handle.dispose() }
+    }
   } finally { await lease[Symbol.asyncDispose]() }
 }

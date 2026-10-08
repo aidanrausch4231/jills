@@ -20,39 +20,27 @@ declare module '@deepseek-ai/dsh-client-ui-chat/client' {
   interface ChatNodeDataMap { 'jills-suggestion': MessageData }
 }
 
+/** The Remote operations, by request and result type. */
+interface Ops {
+  suggest(request: SuggestRequest): JillsCard
+  start(request: StartRequest): JillsCard
+  status(runId: string): RunLine
+  dismiss(action: CardAction): JillsCard
+  never(action: CardAction): JillsCard
+}
 /** Operations the card calls; transport failures arrive as thrown Errors. */
-export interface JillsFace {
-  suggest(request: SuggestRequest): Promise<JillsCard>
-  start(request: StartRequest): Promise<JillsCard>
-  status(runId: string): Promise<RunLine>
-  dismiss(action: CardAction): Promise<JillsCard>
-  never(action: CardAction): Promise<JillsCard>
-}
+export type JillsFace = { [K in keyof Ops]: (arg: Parameters<Ops[K]>[0]) => Promise<ReturnType<Ops[K]>> }
+/** The generated Remote namespace, narrowed to these operations. */
+export type JillsRemote = { [K in keyof Ops]: (arg: Parameters<Ops[K]>[0]) => Promise<RemoteResult<ReturnType<Ops[K]>>> }
 
-/** Narrow the generated Remote namespace to plain promises. */
-export interface JillsRemote {
-  suggest(request: SuggestRequest): Promise<RemoteResult<JillsCard>>
-  start(request: StartRequest): Promise<RemoteResult<JillsCard>>
-  status(runId: string): Promise<RemoteResult<RunLine>>
-  dismiss(action: CardAction): Promise<RemoteResult<JillsCard>>
-  never(action: CardAction): Promise<RemoteResult<JillsCard>>
-}
-
-async function valueOf<T>(request: Promise<RemoteResult<T>>): Promise<T> {
-  const result = await request
-  if (!result.ok) throw new Error(result.error.message)
-  return result.value
-}
-
-/** Bind the Remote namespace into the card's face. */
+/** Bind the Remote namespace into the card's face (Remote errors become thrown Errors). */
 export function jillsFace(remote: JillsRemote): JillsFace {
-  return {
-    suggest: request => valueOf(remote.suggest(request)),
-    start: request => valueOf(remote.start(request)),
-    status: runId => valueOf(remote.status(runId)),
-    dismiss: action => valueOf(remote.dismiss(action)),
-    never: action => valueOf(remote.never(action)),
+  const bind = <K extends keyof Ops>(k: K) => async (arg: never) => {
+    const result = await (remote[k] as (a: never) => Promise<RemoteResult<unknown>>)(arg)
+    if (!result.ok) throw new Error(result.error.message)
+    return result.value
   }
+  return { suggest: bind('suggest'), start: bind('start'), status: bind('status'), dismiss: bind('dismiss'), never: bind('never') } as JillsFace
 }
 
 /** Plain text of a message content value (string or text blocks). */
@@ -109,13 +97,8 @@ export const suggestionDefinition: ConversationNodeDefinition<MessageData> = {
 
 /** Map a run state to the dsh StateDot vocabulary. */
 export function dotState(run: RunLine): 'done' | 'warning' | 'ongoing' | 'error' | 'idle' {
-  switch (run.state) {
-    case 'done': return 'done'
-    case 'needs-you': return 'warning'
-    case 'failed': case 'stuck': return 'error'
-    case 'queued': return 'idle'
-    default: return 'ongoing'
-  }
+  const dots = { done: 'done', 'needs-you': 'warning', failed: 'error', stuck: 'error', queued: 'idle', running: 'ongoing' } as const
+  return dots[run.state] ?? 'ongoing'
 }
 
 /** Edit form values to start inputs: trimmed, empty ones dropped (the Jill's defaults apply). */

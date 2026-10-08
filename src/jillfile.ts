@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { parseFrontMatter } from "./frontmatter.js";
-import { parseDuration } from "./util.js";
+import YAML from "yaml";
 import { renderShellTemplate } from "./template.js";
+import { parseDuration } from "./util.js";
 
 export interface InputDef {
   name: string;
@@ -36,14 +36,8 @@ export interface JillDef {
   inputs: InputDef[];
   steps: StepDef[];
   worktree: boolean;
-  /**
-   * Isolation box this Jill opts into (`box: docker | openshell | <name>`);
-   * `docker: true` is an alias of `box: docker`. Needs a matching isolation
-   * plug-in in config `plugins:`; core ships none.
-   */
+  /** Isolation box (`box: docker | openshell | <name>`): needs an isolation plug-in of that name. */
   box?: string;
-  /** True when box is "docker" (kept for the docker: true alias). */
-  docker: boolean;
   machine: string;
   timeout?: string | number;
   body: string;
@@ -52,14 +46,63 @@ export interface JillDef {
   extra: Record<string, unknown>;
 }
 
-const JILL_KEYS = new Set(["name", "description", "when", "keywords", "inputs", "steps", "worktree", "box", "docker", "machine", "timeout"]);
-const STEP_KEYS = new Set(["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs"]);
+const JILL_KEYS = ["name", "description", "when", "keywords", "inputs", "steps", "worktree", "box", "machine", "timeout"];
+const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs"];
 export const MAX_COPIES = 16;
+export const MAX_DEPTH = 4;
+/** Shown wherever a Jill with worktree: false is suggested or checked. */
+export const NO_WORKTREE_NOTE = "no worktree: edits your checkout directly";
 
-function toList(v: unknown): string[] {
-  if (v === undefined || v === null) return [];
-  if (Array.isArray(v)) return v.map(String);
-  return [String(v)];
+/** Split "---\nyaml\n---\nbody" into parsed YAML and the markdown body. */
+export function parseFrontMatter(text: string, source = "file"): { data: Record<string, unknown>; body: string } {
+  const t = text.replace(/^﻿/, "");
+  const m = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(t);
+  if (!m) throw new Error(`${source}: missing YAML front matter (--- ... ---)`);
+  let data: unknown;
+  try {
+    data = YAML.parse(m[1]!) ?? {};
+  } catch (e) {
+    throw new Error(`${source}: bad YAML front matter: ${(e as Error).message}`);
+  }
+  if (typeof data !== "object" || Array.isArray(data)) throw new Error(`${source}: front matter must be a YAML map`);
+  return { data: data as Record<string, unknown>, body: t.slice(m[0].length) };
+}
+
+const list = (v: unknown): string[] => (v == null ? [] : Array.isArray(v) ? v.map(String) : [String(v)]);
+const str = (v: unknown) => (v === undefined ? undefined : String(v));
+const rest = (o: Record<string, unknown>, known: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !known.includes(k)));
+const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+function tryAll(errs: string[], prefix: string, fn: () => unknown): void {
+  try {
+    fn();
+  } catch (e) {
+    errs.push(prefix + (e as Error).message);
+  }
+}
+
+function parseStep(name: string, s: Record<string, unknown>, errs: string[]): StepDef {
+  const kinds = ["agent", "run", "jill"].filter((k) => s[k] !== undefined);
+  if (kinds.length !== 1) errs.push(`step ${name}: needs exactly one of agent, run, jill (has ${kinds.join(", ") || "none"})`);
+  const copies = s.copies === undefined ? 1 : Number(s.copies);
+  if (!Number.isInteger(copies) || copies < 1 || copies > MAX_COPIES) errs.push(`step ${name}: copies must be 1..${MAX_COPIES}`);
+  tryAll(errs, `step ${name}: `, () => parseDuration(s.timeout));
+  if (s.run !== undefined) tryAll(errs, `step ${name}: `, () => renderShellTemplate(String(s.run), { inputs: {} }));
+  if (s.inputs !== undefined && !isMap(s.inputs)) errs.push(`step ${name}: inputs must be a map`);
+  return {
+    name,
+    agent: str(s.agent),
+    run: str(s.run),
+    jill: str(s.jill),
+    task: str(s.task),
+    needs: list(s.needs),
+    copies: Number.isInteger(copies) ? copies : 1,
+    writes: s.writes === true,
+    model: str(s.model),
+    timeout: s.timeout as string | number | undefined,
+    inputs: isMap(s.inputs) ? Object.fromEntries(Object.entries(s.inputs).map(([k, v]) => [k, String(v)])) : undefined,
+    extra: rest(s, STEP_KEYS),
+  };
 }
 
 export function parseJill(text: string, path = "JILL.md"): JillDef {
@@ -69,113 +112,44 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   if (!name) errs.push("missing name");
   else if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) errs.push(`bad name "${name}" (letters, digits, . _ - only)`);
   const inputs: InputDef[] = [];
-  if (data.inputs !== undefined) {
-    if (!Array.isArray(data.inputs)) errs.push("inputs must be a list");
-    else
-      for (const i of data.inputs) {
-        if (typeof i === "string") inputs.push({ name: i });
-        else if (i && typeof i === "object" && "name" in i) {
-          const o = i as Record<string, unknown>;
-          inputs.push({
-            name: String(o.name),
-            description: o.description ? String(o.description) : undefined,
-            default: o.default !== undefined ? String(o.default) : undefined,
-            required: o.required === true,
-          });
-        } else errs.push(`bad input entry: ${JSON.stringify(i)}`);
-      }
+  if (data.inputs !== undefined && !Array.isArray(data.inputs)) errs.push("inputs must be a list");
+  for (const i of Array.isArray(data.inputs) ? data.inputs : []) {
+    if (typeof i === "string") inputs.push({ name: i });
+    else if (isMap(i) && "name" in i) inputs.push({ name: String(i.name), description: str(i.description), default: str(i.default), required: i.required === true });
+    else errs.push(`bad input entry: ${JSON.stringify(i)}`);
   }
   const steps: StepDef[] = [];
-  const rawSteps = data.steps;
-  if (!rawSteps || typeof rawSteps !== "object" || Array.isArray(rawSteps)) errs.push("steps must be a map of step name -> step");
+  if (!isMap(data.steps)) errs.push("steps must be a map of step name -> step");
   else {
-    for (const [sname, sv] of Object.entries(rawSteps as Record<string, unknown>)) {
-      if (!sv || typeof sv !== "object" || Array.isArray(sv)) {
-        errs.push(`step ${sname}: must be a map`);
-        continue;
-      }
-      const s = sv as Record<string, unknown>;
-      const kinds = ["agent", "run", "jill"].filter((k) => s[k] !== undefined);
-      if (kinds.length !== 1) errs.push(`step ${sname}: needs exactly one of agent, run, jill (has ${kinds.join(", ") || "none"})`);
-      const copies = s.copies === undefined ? 1 : Number(s.copies);
-      if (!Number.isInteger(copies) || copies < 1 || copies > MAX_COPIES) errs.push(`step ${sname}: copies must be 1..${MAX_COPIES}`);
-      if (s.timeout !== undefined) {
-        try {
-          parseDuration(s.timeout);
-        } catch (e) {
-          errs.push(`step ${sname}: ${(e as Error).message}`);
-        }
-      }
-      let stepInputs: Record<string, string> | undefined;
-      if (s.inputs !== undefined) {
-        if (typeof s.inputs !== "object" || Array.isArray(s.inputs) || s.inputs === null) errs.push(`step ${sname}: inputs must be a map`);
-        else stepInputs = Object.fromEntries(Object.entries(s.inputs as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
-      }
-      if (s.run !== undefined) {
-        try {
-          renderShellTemplate(String(s.run), { inputs: {} });
-        } catch (e) {
-          errs.push(`step ${sname}: ${(e as Error).message}`);
-        }
-      }
-      const extra: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(s)) if (!STEP_KEYS.has(k)) extra[k] = v;
-      steps.push({
-        name: sname,
-        agent: s.agent !== undefined ? String(s.agent) : undefined,
-        run: s.run !== undefined ? String(s.run) : undefined,
-        jill: s.jill !== undefined ? String(s.jill) : undefined,
-        task: s.task !== undefined ? String(s.task) : undefined,
-        needs: toList(s.needs),
-        copies: Number.isInteger(copies) ? copies : 1,
-        writes: s.writes === true,
-        model: s.model !== undefined ? String(s.model) : undefined,
-        timeout: s.timeout as string | number | undefined,
-        inputs: stepInputs,
-        extra,
-      });
+    for (const [sname, sv] of Object.entries(data.steps)) {
+      if (isMap(sv)) steps.push(parseStep(sname, sv, errs));
+      else errs.push(`step ${sname}: must be a map`);
     }
     if (steps.length === 0) errs.push("steps is empty");
   }
-  // needs refer to known steps, no cycles
   const names = new Set(steps.map((s) => s.name));
   for (const s of steps) for (const n of s.needs) if (!names.has(n)) errs.push(`step ${s.name}: needs unknown step "${n}"`);
   const cyc = findCycle(steps);
   if (cyc) errs.push(`steps form a cycle: ${cyc.join(" -> ")}`);
-  if (data.timeout !== undefined) {
-    try {
-      parseDuration(data.timeout);
-    } catch (e) {
-      errs.push((e as Error).message);
-    }
-  }
-  let box: string | undefined;
-  if (data.box !== undefined && data.box !== null && data.box !== false) {
-    if (typeof data.box !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(data.box)) errs.push(`box must be a plug-in name such as docker or openshell`);
-    else box = data.box;
-  }
-  if (data.docker === true) {
-    if (box && box !== "docker") errs.push(`docker: true conflicts with box: ${box} (docker: true means box: docker)`);
-    box = "docker";
-  }
+  tryAll(errs, "", () => parseDuration(data.timeout));
+  const box = data.box == null || data.box === false ? undefined : data.box;
+  if (box !== undefined && (typeof box !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(box))) errs.push("box must be a plug-in name such as docker or openshell");
+  if (data.docker !== undefined) errs.push("docker: is not a Jill field; use box: docker");
   if (errs.length) throw new Error(`${path}: ${errs.join("; ")}`);
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(data)) if (!JILL_KEYS.has(k)) extra[k] = v;
   return {
     name,
     description: String(data.description ?? ""),
-    when: data.when !== undefined ? String(data.when) : undefined,
-    keywords: toList(data.keywords),
+    when: str(data.when),
+    keywords: list(data.keywords),
     inputs,
     steps,
-    worktree: data.worktree === undefined ? true : data.worktree === true,
-    box,
-    docker: box === "docker",
+    worktree: data.worktree === undefined || data.worktree === true,
+    box: box as string | undefined,
     machine: data.machine === undefined ? "local" : String(data.machine),
     timeout: data.timeout as string | number | undefined,
     body: body.trim(),
     path,
-    extra,
+    extra: rest(data, JILL_KEYS),
   };
 }
 
@@ -189,8 +163,7 @@ function findCycle(steps: StepDef[]): string[] | undefined {
     state.set(n, 1);
     stack.push(n);
     for (const d of by.get(n)?.needs ?? []) {
-      if (!by.has(d)) continue;
-      const c = visit(d);
+      const c = by.has(d) ? visit(d) : undefined;
       if (c) return c;
     }
     stack.pop();
@@ -204,87 +177,67 @@ function findCycle(steps: StepDef[]): string[] | undefined {
   return undefined;
 }
 
-/** Shown wherever a Jill with worktree: false is suggested or checked. */
-export const NO_WORKTREE_NOTE = "no worktree: edits your checkout directly";
-
 /**
- * Refusals for settings whose plug-ins are not installed. `box:` (and its
- * alias docker: true) needs an isolation plug-in of that name loaded from
- * config `plugins:`; pass the loaded isolation names. Returns a message or undefined.
+ * Settings whose plug-ins are not installed are refused: `box: <name>` needs an
+ * isolation plug-in of that name (pass the loaded isolation names), and only
+ * machine: local exists in v1. Returns a message or undefined.
  */
-export function v1Refusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()): string | undefined {
-  const r = boxRefusal(j, isolation);
-  if (r) return r;
+export function refusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()): string | undefined {
+  if (j.box && !isolation.has(j.box))
+    return `Jill "${j.name}" sets box: ${j.box}, but the "${j.box}" isolation extension is not installed. Add the ${j.box} isolation plug-in file to config plugins: (Jills core ships only worktree isolation), or remove box: to run in a worktree on this machine.`;
   if (j.machine !== "local") return `Jill "${j.name}" sets machine: ${j.machine} — only machine: local is supported in v1 (ssh places come later).`;
   return undefined;
 }
 
-/** box: <name> without an installed isolation plug-in of that name → message naming the missing extension. */
-export function boxRefusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()): string | undefined {
-  if (!j.box || isolation.has(j.box)) return undefined;
-  const how = j.box === "docker" ? "box: docker (or docker: true)" : `box: ${j.box}`;
-  return `Jill "${j.name}" sets ${how}, but the "${j.box}" isolation extension is not installed. Add the ${j.box} isolation plug-in file to config plugins: (Jills core ships only worktree isolation), or remove box: to run in a worktree on this machine.`;
-}
-
-export interface JillScan {
-  jills: Map<string, JillDef>;
+export interface Scan<T> {
+  items: Map<string, T>;
+  /** name -> every path found, when more than one. First path wins. */
   duplicates: Map<string, string[]>;
   errors: string[];
 }
 
-function jillFiles(dir: string): string[] {
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
-  const out: string[] = [];
-  for (const entry of readdirSync(dir).sort()) {
-    const p = join(dir, entry, "JILL.md");
-    if (existsSync(p)) out.push(p);
-  }
-  return out;
-}
-
-/** Scan jill_paths in order (folders of <name>/JILL.md); first name wins. */
-export function scanJills(paths: string[]): JillScan {
-  const jills = new Map<string, JillDef>();
+/** Parse every file from each folder in order; the first item with a name wins. */
+export function scanFirstWins<T extends { name: string }>(paths: string[], files: (dir: string) => string[], parse: (file: string) => T): Scan<T> {
+  const items = new Map<string, T>();
   const all = new Map<string, string[]>();
   const errors: string[] = [];
   for (const dir of paths) {
-    for (const f of jillFiles(dir)) {
-      let j: JillDef;
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
+    for (const f of files(dir)) {
       try {
-        j = parseJill(readFileSync(f, "utf8"), f);
+        const it = parse(f);
+        all.set(it.name, [...(all.get(it.name) ?? []), f]);
+        if (!items.has(it.name)) items.set(it.name, it);
       } catch (e) {
         errors.push((e as Error).message);
-        continue;
       }
-      const l = all.get(j.name) ?? [];
-      l.push(f);
-      all.set(j.name, l);
-      if (!jills.has(j.name)) jills.set(j.name, j);
     }
   }
-  const duplicates = new Map<string, string[]>();
-  for (const [k, v] of all) if (v.length > 1) duplicates.set(k, v);
-  return { jills, duplicates, errors };
+  return { items, duplicates: new Map([...all].filter(([, v]) => v.length > 1)), errors };
 }
 
-export const MAX_DEPTH = 4;
+/** Scan jill_paths in order (folders of <name>/JILL.md); first name wins. */
+export function scanJills(paths: string[]): Scan<JillDef> {
+  const files = (dir: string) => readdirSync(dir).sort().map((e) => join(dir, e, "JILL.md")).filter((p) => existsSync(p));
+  return scanFirstWins(paths, files, (f) => parseJill(readFileSync(f, "utf8"), f));
+}
 
 /**
  * Check nested jill: steps statically. Throws on self/indirect recursion,
- * unknown nested Jills, or nesting deeper than MAX_DEPTH (outermost = depth 1).
+ * unknown nested Jills, nesting deeper than MAX_DEPTH (outermost = depth 1), or
+ * a nested Jill whose box differs from the outermost one (the outermost decides).
  */
 export function checkNesting(root: JillDef, lookup: (name: string) => JillDef | undefined): void {
   const walk = (j: JillDef, stack: string[]) => {
-    if (stack.length > MAX_DEPTH)
-      throw new Error(`Jill nesting too deep: ${stack.join(" -> ")} (max depth ${MAX_DEPTH})`);
+    if (stack.length > MAX_DEPTH) throw new Error(`Jill nesting too deep: ${stack.join(" -> ")} (max depth ${MAX_DEPTH})`);
     for (const s of j.steps) {
       if (!s.jill) continue;
       if (stack.includes(s.jill))
         throw new Error(`Jill recursion refused: ${[...stack, s.jill].join(" -> ")} (a Jill may not call itself, directly or indirectly)`);
       const child = lookup(s.jill);
       if (!child) throw new Error(`step ${j.name}.${s.name}: unknown Jill "${s.jill}"`);
-      if (child.box && !root.box)
-        throw new Error(`nested Jill "${child.name}" requires box: ${child.box} but outer Jill "${root.name}" runs without it`);
+      if (child.box && child.box !== root.box)
+        throw new Error(`nested Jill "${child.name}" sets box: ${child.box} but outermost Jill "${root.name}" uses box: ${root.box ?? "none"}`);
       walk(child, [...stack, child.name]);
     }
   };

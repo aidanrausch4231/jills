@@ -42,22 +42,23 @@ Set `JILLS_HOME` to use another home folder (tests always use a temp one).
 
 ```yaml
 auto: false                     # global auto/manual switch (jills auto on|off)
-agent_paths: [/home/rausch/harness/v4/agents-src]   # searched in order, first name wins
+agent_paths: [~/.jills/agents]  # agent runner plug-in: searched in order, first name wins (default $JILLS_HOME/agents)
 jill_paths: [~/.jills/jills]    # folders of <name>/JILL.md, first name wins
 jev:
   model: typesafe/jev-router    # OpenRouter model
   key_env: OPENROUTER_API_KEY   # key is read ONLY from this env var, never logged
   threshold: 0.7                # suggest only when confidence >= threshold
-agent_cli: pi                   # pi (v1); claude is v2
+agent_cli: pi                   # pi (v1); other agent CLIs are add-ons
 # agent_bin: /path/to/pi        # optional binary override
-# claude_permission_mode: acceptEdits   # v2 (Claude Code)
 tiers: { spinsoft: openrouter/some-cheap-model }
 default_model: openai-codex/gpt-5.6-sol
 # plugins: [~/.jills/plugins/my-runner.js]
 # default_timeout: 2h           # total limit for Jills that set no timeout (default 2h)
 ```
 
-No key or a network error → the keywords matcher answers (`keywords:` in JILL.md).
+No key or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
+`auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a
+plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `jev:` to the Jev matcher).
 
 ## JILL.md
 
@@ -73,7 +74,8 @@ inputs:
 worktree: true        # strongly recommended (default): run on branch jills/<name>-<run> in $JILLS_HOME/worktrees/
                       # worktree: false = no worktree: edits your checkout directly (jills check warns)
 # box: docker         # optional isolation extension (docker | openshell | <name>); refused unless a
-                      # matching isolation plug-in is listed in config plugins:. docker: true = box: docker
+                      # matching isolation plug-in is listed in config plugins:. Nested Jills may not
+                      # set a different box than the outermost one.
 machine: local        # v1 refuses anything else
 timeout: 90m          # whole run; over → stuck
 steps:
@@ -101,22 +103,28 @@ Agent files are markdown with front matter `name`, `description`, `tools`, `mode
 body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier] ?? default_model`.
 
 - pi: `pi -p --model M --append-system-prompt <instructions file> --tools read,grep -- "<task>"`
-- claude (v2): `claude -p --model M --append-system-prompt "<instructions>" --tools Read,Grep [--permission-mode P] -- "<task>"`
+- Other agent CLIs (Claude Code, Codex) are v2 runner plug-ins. `jills check` asks each runner to
+  describe every step, so an unknown agent is an error before anything runs.
 
 ### How a run works
 
 - Steps whose `needs` are done start in parallel; `copies: N` starts N instances.
 - `jill:` steps run inline in the same run and worktree. No self or indirect recursion; depth ≤ 4.
-- Per-step and total timeouts stop the whole process group (SIGTERM, then SIGKILL after a grace);
-  the run becomes `stuck`. Every run has a total limit: the Jill's `timeout`, else config
-  `default_timeout`, else 2h. A value of 0 or less falls through to the next one; values above
-  2^31-1 ms (about 24.8 days) are clamped, and the record keeps the limit actually used.
-- The runner writes a heartbeat (wall time + its own monotonic elapsed time) every 5 s and records
-  its own and each step's process start time. `jills wait` / status mark a run `stuck` when the
-  runner says it is past its limit, or when the wall-clock deadline has passed and the heartbeat
-  stays unchanged for 30 s on the watcher's own clock, so a laptop suspend or clock jump alone never
-  makes a live run stuck. The runner and steps then get SIGTERM, then SIGKILL after a grace, and only
-  after their start time matches the record, so a recycled pid is never signaled.
+- Only the runner (the process that spawned the steps) signals them: per-step and total timeouts
+  stop the step's process group (SIGTERM, then SIGKILL after a grace) and the run becomes `stuck`.
+  Every run has a total limit: the Jill's `timeout`, else config `default_timeout`, else 2h. A value
+  of 0 or less falls through to the next one; values above 2^31-1 ms (about 24.8 days) are clamped.
+- Observers (`jills status`, `jills wait`, the Pi and dsh watchers) never signal anything. The
+  runner writes a heartbeat every 5 s: wall time, `process.hrtime.bigint()` (one monotonic clock
+  for every process on a boot; it does not advance during suspend) and the boot id. An observer marks
+  a running record `stuck` when the runner is gone (its pid no longer exists, or another boot), or
+  when the wall-clock deadline has passed and either the runner's own monotonic time is past the
+  limit or its stamp stopped advancing on the observer's own clock. A suspend or clock jump alone
+  never makes a live run stuck. A heartbeat never overwrites a terminal record; a runner that finds
+  its record marked stuck stops its own steps.
+- `jills stop <run>` stops a run's processes: the runner and every step process carry
+  `JILLS_RUN_ID=<run>` in their environment. Stop scans `/proc/*/environ` for that tag (same boot
+  only, by boot id), sends SIGTERM, then SIGKILL to what is still tagged. Nothing else is signaled.
 - Git stays outside agents: Jills commits after each `writes: true` step.
 - Writers that can run at the same time get child worktrees branched from the run branch, merged
   back with `git merge-tree --write-tree` + `commit-tree` + compare-and-swap `update-ref`. A conflict
@@ -136,7 +144,8 @@ jills suggest --session <id> [--repo p] [--json] "<message>"   # recent turns as
 jills start <jill> [--input k=v]... [--repo p] [--session id] [--json] [--wait]
 jills go --session <id> [jill] [--input k=v] # start the last suggestion with the inputs Jev proposed
 jills wait <run> [--timeout 30m]            # one-line result: state, branch, worktree, logs
-jills status [run]
+jills status [run]                          # never signals; a hung or dead runner shows as stuck
+jills stop <run>                            # SIGTERM/SIGKILL only processes with JILLS_RUN_ID=<run>
 jills try <jill> --dry-run [--input k=v]    # without --dry-run: run in the foreground
 jills dismiss|quiet|on --session <id>       # on --unmute also clears repo mutes
 jills never [--session id] [--jill name] [--repo p]
@@ -164,16 +173,38 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - The last suggestion's inputs are saved in the session state; `jills go` (and `/jills go`) uses
   them, with `--input` overriding single values.
 
-## Plug-ins
+## Write a plug-in
 
-Slots (interface version 1, `src/plugins/types.ts`): `matcher`, `runner`, `isolation`, `check`.
+A plug-in is one ESM file whose default export is one object `{ slot, apiVersion: 1, name, ...methods }`
+(types: `src/plugins/types.ts`, interface version 1). List it under `plugins:` in config.yml; no core
+edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read their own config keys from
+`config.raw`, and unknown `JILL.md` fields reach them as `jill.extra` / `step.extra`.
+
+```ts
+// matcher: tried in order (config plug-ins first); return undefined to let the next one answer.
+{ slot: "matcher", match(input: { message; recent: Turn[]; jills: JillSummary[]; already: string[]; config }): Promise<MatchResult | undefined> }
+// runner: the first whose canRun(step) is true runs the step; describe() serves dry runs and `jills check`.
+{ slot: "runner", canRun(step): boolean; describe(ctx): string; run(ctx: StepRunContext): Promise<StepRunResult>; check?(config): { errors; warnings } }
+// isolation: picked by `box: <name>` (default "worktree"); child/mergeBack serve parallel writers.
+{ slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg) }
+// check: named in a step's `checks: [...]` (exit-code always runs first).
+{ slot: "check", check({ step, result, logPath }): Promise<{ ok: boolean; reason?: string }> }
+// hook: sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you); errors are ignored.
+{ slot: "hook", on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void> }
+```
+
 Built-ins: matcher `jev` then `keywords`; runner `command` and `agent`; isolation `worktree`;
-check `exit-code`. A plug-in is one ESM file whose default export is
-`{ slot, apiVersion: 1, name, ...methods }`; list it under `plugins:` in config.yml. Core refuses an
-unknown `apiVersion`. Docker and OpenShell boxes are optional isolation plug-ins (none ship with
-core): a Jill opts in with `box: docker` (or `box: openshell`), and `jills check` / start refuse it,
-naming the missing extension, until a matching isolation plug-in is listed under `plugins:`. `ssh`
-places come later in the same way.
+check `exit-code`. Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
+finished run's one-line result to a file:
+
+```yaml
+plugins: [/path/to/jills/dist/examples/plugins/notify.js]   # pnpm build compiles examples/
+notify: {file: ~/jills-done.txt}
+```
+
+Docker and OpenShell boxes are optional isolation plug-ins (none ship with core): a Jill opts in with
+`box: docker`, and `jills check` / start refuse it, naming the missing extension, until a matching
+isolation plug-in is listed under `plugins:`. `ssh` places come later in the same way.
 
 ## Develop
 

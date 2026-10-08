@@ -7,6 +7,7 @@
  */
 import type { JillsConfig } from "../config.js";
 import type { JillDef, StepDef } from "../jillfile.js";
+import type { RunEvent, RunRecord } from "../runs.js";
 
 export const PLUGIN_API_VERSION = 1 as const;
 
@@ -62,24 +63,23 @@ export interface StepRunContext {
   signal: AbortSignal;
   env: Record<string, string>;
   config: JillsConfig;
-  /** Call with the process (group) id as soon as the step's process starts. */
-  onSpawn?: (pid: number) => void;
 }
 export interface StepRunResult {
   exitCode: number | null;
   timedOut: boolean;
   aborted: boolean;
   signal?: string;
-  pid?: number;
 }
 export interface RunnerPlugin {
   slot: "runner";
   apiVersion: 1;
   name: string;
   canRun(step: StepDef): boolean;
-  /** Describe what would run, for dry runs. */
-  describe(ctx: Omit<StepRunContext, "signal" | "logPath" | "onSpawn">): string;
+  /** Describe what would run, for dry runs and `jills check` (throw for a step it cannot run). */
+  describe(ctx: Omit<StepRunContext, "signal" | "logPath">): string;
   run(ctx: StepRunContext): Promise<StepRunResult>;
+  /** Optional extra `jills check` findings (missing paths, duplicate names). */
+  check?(config: JillsConfig): { errors: string[]; warnings: string[] };
 }
 
 // ---- isolation ----
@@ -123,4 +123,13 @@ export interface CheckPlugin {
   check(input: CheckInput): Promise<CheckResult>;
 }
 
-export type AnyPlugin = MatcherPlugin | RunnerPlugin | IsolationPlugin | CheckPlugin;
+// ---- hook ----
+/** Sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you). Errors are ignored. */
+export interface HookPlugin {
+  slot: "hook";
+  apiVersion: 1;
+  name: string;
+  on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void>;
+}
+
+export type AnyPlugin = MatcherPlugin | RunnerPlugin | IsolationPlugin | CheckPlugin | HookPlugin;

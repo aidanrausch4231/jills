@@ -91,10 +91,9 @@ export interface BridgeOptions {
   agent?: AgentPort | undefined
 }
 
-/** Card note when the chat has no working folder. Jills never falls back to the dsh Host's own folder. */
 /** Shown on a card whose Jill sets worktree: false. */
 export const NO_WORKTREE = 'no worktree: edits your checkout directly'
-
+/** Card note when the chat has no working folder. Jills never falls back to the dsh Host's own folder. */
 export const NO_WORKSPACE = 'open a workspace folder first: this chat has no working folder, and Jills never runs in the dsh Host\'s own folder'
 
 /** Number of turns before the new message that Jev reads. */
@@ -160,7 +159,7 @@ export function jillsSession(sessionId: string): string {
 /** Build the card's status line from a run record. */
 export function runLine(core: Pick<JillsCore, 'resultLine'>, r: CoreRunRecord): RunLine {
   const steps = Object.values(r.steps)
-  const stepsDone = steps.filter(s => s.state === 'done' || s.state === 'failed' || s.state === 'stuck' || s.state === 'skipped').length
+  const stepsDone = steps.filter(s => ['done', 'failed', 'stuck', 'skipped'].includes(s.state)).length
   const terminal = TERMINAL.includes(r.state)
   const progress = steps.length ? ` · ${stepsDone}/${steps.length} steps` : ''
   const tail = r.state === 'done' && r.branch ? ` · branch ${r.branch}`
@@ -207,23 +206,14 @@ export class JillsBridge {
     }
   }
 
-  private opts(): { home?: string } {
-    return this.home ? { home: this.home } : {}
-  }
-
-  private key(sessionId: string, messageId: string): string {
-    return `${sessionId}\u0000${messageId}`
-  }
+  private opts(): { home?: string } { return this.home ? { home: this.home } : {} }
+  private key(sessionId: string, messageId: string): string { return `${sessionId}\u0000${messageId}` }
 
   /** Ask Jev about one user message (cached per message). */
   suggest(request: SuggestRequest): Promise<JillsCard> {
     const key = this.key(request.sessionId, request.messageId)
-    let card = this.cards.get(key)
-    if (!card) {
-      card = this.ask(request)
-      this.cards.set(key, card)
-    }
-    return card
+    if (!this.cards.has(key)) this.cards.set(key, this.ask(request))
+    return this.cards.get(key)!
   }
 
   private async ask(request: SuggestRequest): Promise<JillsCard> {

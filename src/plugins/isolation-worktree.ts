@@ -1,7 +1,26 @@
+import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { git, gitRaw, repoRoot } from "../git.js";
 import type { IsolationPlugin, MergeResult, Workspace } from "./types.js";
+
+const IDENTITY = { GIT_AUTHOR_NAME: "Jills", GIT_AUTHOR_EMAIL: "jills@localhost", GIT_COMMITTER_NAME: "Jills", GIT_COMMITTER_EMAIL: "jills@localhost" };
+
+/** Run git as Jills; never throws for a non-zero exit. */
+function gitRaw(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = { ...process.env, ...IDENTITY, GIT_TERMINAL_PROMPT: "0" };
+  return new Promise((resolve) =>
+    execFile("git", args, { cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) =>
+      resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: String(stdout), stderr: String(stderr) }),
+    ),
+  );
+}
+
+/** Run git; throws with stderr on a non-zero exit. */
+async function git(cwd: string, args: string[]): Promise<string> {
+  const r = await gitRaw(cwd, args);
+  if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+  return r.stdout.trim();
+}
 
 function safe(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, "-");
@@ -20,7 +39,8 @@ const worktreeIsolation: IsolationPlugin = {
   name: "worktree",
 
   async prepare({ repo, jill, runId, config }) {
-    const root = await repoRoot(repo);
+    const top = await gitRaw(repo, ["rev-parse", "--show-toplevel"]);
+    const root = top.code === 0 ? top.stdout.trim() : undefined;
     if (!root) throw new Error(`${repo} is not inside a git repository (worktree: true needs one; set worktree: false or pass --input repo=<path>)`);
     const head = await gitRaw(root, ["rev-parse", "--verify", "HEAD"]);
     if (head.code !== 0) throw new Error(`${root} has no commits yet; make a first commit before running a Jill in a worktree`);

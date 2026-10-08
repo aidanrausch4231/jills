@@ -26,12 +26,17 @@ test("depth 4 is allowed, depth 5 is refused", () => {
   assert.throws(() => checkNesting(five.get("d1")!, (n) => five.get(n)), /nesting too deep: d1 -> d2 -> d3 -> d4 -> d5 \(max depth 4\)/);
 });
 
-test("unknown nested Jill and inner docker are refused", () => {
+test("unknown nested Jill and a nested box that differs from the outermost are refused", () => {
   const a = j("a", ["ghost"]);
   assert.throws(() => checkNesting(a, () => undefined), /unknown Jill "ghost"/);
-  const inner = parseJill("---\nname: inner\ndocker: true\nsteps:\n  s: {run: x}\n---\n");
-  const outer = j("outer", ["inner"]);
-  assert.throws(() => checkNesting(outer, (n) => (n === "inner" ? inner : undefined)), /requires box: docker/);
+  const boxed = (name: string, box: string, calls = "  s: {run: x}") => parseJill(`---\nname: ${name}\nbox: ${box}\nsteps:\n${calls}\n---\n`);
+  const inner = boxed("inner", "docker");
+  const look = (n: string) => (n === "inner" ? inner : undefined);
+  assert.throws(() => checkNesting(j("outer", ["inner"]), look), /nested Jill "inner" sets box: docker but outermost Jill "outer" uses box: none/);
+  const shell = boxed("shell", "openshell", "  s: {jill: inner}");
+  assert.throws(() => checkNesting(shell, look), /nested Jill "inner" sets box: docker but outermost Jill "shell" uses box: openshell/);
+  assert.doesNotThrow(() => checkNesting(boxed("dock", "docker", "  s: {jill: inner}"), look));
+  assert.doesNotThrow(() => checkNesting(boxed("dock", "docker", "  s: {jill: plain}"), (n) => (n === "plain" ? j("plain", []) : undefined)));
 });
 
 test("start refuses recursive Jills before creating anything", async () => {
