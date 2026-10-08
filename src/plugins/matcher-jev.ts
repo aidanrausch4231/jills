@@ -89,8 +89,8 @@ const jevMatcher: MatcherPlugin = {
   name: "jev",
   async match(input) {
     const jev = jevConfig(input.config);
-    const own = await input.jevKey?.(jev.key_env).catch(() => undefined);
-    const key = own?.trim() || process.env[jev.key_env];
+    const own: unknown = await Promise.resolve().then(() => input.jevKey?.()).catch(() => undefined);
+    const key = (typeof own === "string" && own.trim()) || process.env[jev.key_env];
     if (!key) return undefined;
     const f: FetchLike = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     try {
@@ -111,3 +111,9 @@ const jevMatcher: MatcherPlugin = {
   },
 };
 export default jevMatcher;
+
+/** Core: give only this built-in matcher a key lookup, locked to jev.key_env (other matchers get none). */
+export function withJevKey(m: MatcherPlugin, input: MatchInput, lookup: ((name: string) => Promise<string | undefined>) | undefined, config: JillsConfig): MatchInput {
+  const { jevKey: _drop, ...rest } = input; // never pass on a lookup the caller supplied
+  return m === jevMatcher && lookup ? { ...rest, jevKey: () => lookup(jevConfig(config).key_env) } : rest;
+}

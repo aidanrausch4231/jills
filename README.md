@@ -58,7 +58,7 @@ default_model: openai-codex/gpt-5.6-sol
 ```
 
 Jev uses the harness's OpenRouter login; the env var is a fallback. Pi passes its own OpenRouter key
-(`ctx.modelRegistry.getApiKeyForProvider("openrouter")`), the dsh add-on asks dsh's credentials service
+(`ctx.modelRegistry.getApiKeyForProvider("openrouter")`, only while `key_env` is the default), the dsh add-on asks dsh's credentials service
 for the ref named by `key_env`; the CLI and MCP server use the env var only. The key is never logged,
 written to Jills state or run records, or sent to agents. No key or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
 `auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a

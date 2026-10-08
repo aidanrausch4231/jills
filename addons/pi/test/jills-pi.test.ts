@@ -160,6 +160,8 @@ describe("pi add-on: suggestions", () => {
     const [args] = t.called("suggest");
     assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), "sk-pi-login");
     assert.deepEqual(asked, ["openrouter"]);
+    assert.equal(await args[0].jevKey("MY_OTHER_KEY"), undefined, "custom key_env: env var only, Pi's login not used");
+    assert.deepEqual(asked, ["openrouter"]);
     assert.ok(!JSON.stringify(t.calls).includes("sk-pi-login") && !JSON.stringify(t.sent).includes("sk-pi-login"), "key never shown or sent");
     delete t.ctx.modelRegistry; // older Pi without a registry: no key, core uses the env var
     assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), undefined);

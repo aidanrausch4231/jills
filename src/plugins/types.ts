@@ -22,8 +22,8 @@ export interface MatchInput {
   /** Jills already suggested or running in this chat. */
   already: string[];
   config: JillsConfig;
-  /** The harness's own key lookup for Jev (by jev.key_env's name). Never log or store the value. */
-  jevKey?: (name: string) => Promise<string | undefined>;
+  /** Built-in Jev matcher only: the harness's own key for jev.key_env (name locked by core). Never log or store it. */
+  jevKey?: () => Promise<string | undefined> | string | undefined;
 }
 export type MatchLabel = "talk" | "same" | "new";
 export type MatchResult = { label: MatchLabel; jill?: string; inputs?: Record<string, string>; confidence: number; matcher: string; note?: string };

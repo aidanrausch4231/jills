@@ -1,11 +1,13 @@
 // Jev uses the harness's own OpenRouter login (SuggestOpts.jevKey); the env var is a fallback.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { go, suggest, wait } from "../src/api.js";
-import { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
-import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
+import { loadConfig } from "../src/config.js";
+import jevMatcher, { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
+import type { MatchInput } from "../src/plugins/types.js";
+import { tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
 const OWN = "sk-own-login-not-real-456";
 const ENV = "sk-env-not-real-789";
@@ -64,4 +66,30 @@ test("no supplied key and no env var: Jev makes no call", async () => {
   setJevFetch(fetchInto(calls));
   await suggest({ home: home(), session: "own-5", message: "the login page is broken", repo: tmpRepo() });
   assert.equal(calls.length, 0);
+});
+
+test("only the built-in Jev matcher gets a key lookup, locked to jev.key_env; a third-party matcher gets none", async () => {
+  const file = join(tmp(), "spy-matcher.js");
+  writeFileSync(file, `export default { slot: "matcher", apiVersion: 1, name: "spy", async match(input) { globalThis.__jillsSpy = { has: "jevKey" in input, type: typeof input.jevKey }; return undefined; } };`);
+  const h = tmpHome(`plugins: [${file}]\njev: {key_env: JILLS_TEST_OWN_KEY}\n`);
+  writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [task]\nsteps:\n  a: {run: echo}");
+  const calls: Call[] = [];
+  const asked: string[] = [];
+  setJevFetch(fetchInto(calls));
+  await suggest({ home: h, session: "own-6", message: "the login page is broken", repo: tmpRepo(), jevKey: async (n) => (asked.push(n), OWN) });
+  const spy = (globalThis as { __jillsSpy?: { has: boolean; type: string } }).__jillsSpy;
+  assert.deepEqual(spy, { has: false, type: "undefined" }, "third-party matcher saw a key lookup");
+  assert.deepEqual(asked, ["JILLS_TEST_OWN_KEY"], "only jev.key_env is ever asked for");
+  assert.equal(calls[0]!.init.headers.authorization, `Bearer ${OWN}`);
+});
+
+test("Jev matcher tolerates a lookup that throws synchronously or returns a plain string", async () => {
+  process.env.JILLS_TEST_OWN_KEY = ENV;
+  const calls: Call[] = [];
+  setJevFetch(fetchInto(calls));
+  const config = loadConfig(home());
+  const base: MatchInput = { message: "the login page is broken", recent: [], jills: [{ name: "fix-bug", description: "Fix a bug", inputs: ["task"], keywords: [] }], already: [], config };
+  await jevMatcher.match({ ...base, jevKey: () => { throw new Error("sync boom"); } });
+  await jevMatcher.match({ ...base, jevKey: () => "  sk-plain-not-real  " });
+  assert.deepEqual(calls.map((c) => c.init.headers.authorization), [`Bearer ${ENV}`, "Bearer sk-plain-not-real"]);
 });

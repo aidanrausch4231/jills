@@ -6,6 +6,7 @@ import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./confi
 import { nestedInputs, parallelWriters, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
+import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
 import { listRecords, loadHeartbeat, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, type RunRecord } from "./runs.js";
@@ -48,7 +49,7 @@ export interface SuggestOpts extends BaseOpts {
   /** Repo the chat works in (for per-repo "never"). Defaults to the git root of cwd. */
   repo?: string;
   cwd?: string;
-  /** The harness's own key lookup for Jev (gets jev.key_env's name); only passed to matchers, never stored. */
+  /** The harness's own key lookup for Jev (gets jev.key_env's name); core passes it only to the Jev matcher, never stored. */
   jevKey?: (name: string) => Promise<string | undefined>;
 }
 
@@ -77,7 +78,7 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   const declared = (m: MatchResult | undefined) => (m?.jill ? { ...m, inputs: declaredInputs(c.lookup(m.jill), m.inputs) } : m);
   const match: SuggestCtx["match"] = async (input) => {
     for (const matcher of c.plugins.matchers) {
-      const m = await matcher.match({ ...input, jevKey: o.jevKey });
+      const m = await matcher.match(withJevKey(matcher, input, o.jevKey, c.config));
       if (m) return declared(m);
     }
     return undefined;
@@ -238,9 +239,8 @@ export async function go(o: GoOpts): Promise<{ record: RunRecord; inputs: Record
   const last = await chat(o.session, { kind: "last" }, o);
   const name = o.jill ?? last?.jill;
   if (!name) throw new Error("nothing was suggested in this chat; use jills start <jill>");
-  const j = (await context(o)).lookup(name);
   const merged = { ...(last?.jill === name ? last.inputs : {}), ...o.inputs };
-  const inputs = declaredInputs(j, merged);
+  const inputs = declaredInputs((await context(o)).lookup(name), merged);
   const record = await start(name, { home: o.home, inputs, cwd: o.cwd, session: o.session });
   return { record, inputs, dropped: Object.keys(merged).filter((k) => !(k in inputs)) };
 }
