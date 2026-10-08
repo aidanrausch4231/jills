@@ -27,7 +27,8 @@ Set `JILLS_HOME` to use another home folder (tests always use a temp one).
 - **MCP (any harness)**: register `jills mcp` as a stdio MCP server. Tools: `list_jills`,
   `suggest_jill`, `start_jill`, `jill_status`, `wait_for_jill`.
   - Claude Code: `claude mcp add jills -- node /abs/path/personal/jills/dist/src/cli.js mcp`
-  - Pi: add to `~/.pi/mcp.json` (or project `.pi/mcp.json`):
+  - Pi: run `pi mcp add jills -- node /abs/path/personal/jills/dist/src/cli.js mcp`, or add this
+    to the global `~/.pi/agent/mcp.json` (a project `.pi/mcp.json` applies only in trusted projects):
     `{"mcpServers": {"jills": {"command": "node", "args": ["/abs/path/personal/jills/dist/src/cli.js", "mcp"]}}}`
   - dsh: add the same command as an MCP server in the dsh config.
 - **Chat suggestions** come from the add-ons in `addons/` (Claude Code hook, Pi extension, dsh card).
@@ -81,9 +82,12 @@ Step fields: exactly one of `agent: <name>`, `run: <shell>`, `jill: <name>`; plu
 Unknown fields pass through to plug-ins.
 
 Templates: `{{inputs.x}}`, `{{task}}`, `{{copy}}`, `{{run_id}}`, `{{steps.<name>.output}}`.
-In `run:` commands every value is shell-quoted, so write placeholders **outside** quotes
-(`echo hello {{inputs.who}}`, not `echo "hello {{inputs.who}}"`). Steps also get env vars
-`JILLS_RUN_ID`, `JILLS_STEP`, `JILLS_WORKSPACE`, `JILLS_COPY`, `JILLS_INPUT_<NAME>`.
+In `run:` commands no value is ever pasted into the shell text: each placeholder becomes an env
+var reference (`"${JILLS_INPUT_X}"`, `"${JILLS_TASK}"`, `"${JILLS_COPY}"`,
+`"${JILLS_STEP_OUT_<NAME>}"`), quoted to fit where it sits, so placeholders work outside quotes,
+inside `"double"` or `'single'` quotes and inside `$( )`, and inputs, chat text or agent output
+cannot inject commands. Placeholders inside backticks are refused (use `$( )`). Steps also get env
+vars `JILLS_RUN_ID`, `JILLS_STEP`, `JILLS_WORKSPACE`, `JILLS_COPY`, `JILLS_INPUT_<NAME>`.
 
 ### Agent steps
 
@@ -133,7 +137,9 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - Suggest only when Jev labels the message `new` with confidence ≥ threshold.
 - Dismissed ("Not this") → quiet for the rest of this chat.
 - A Jill running in this chat → quiet until it ends.
-- An ignored suggestion → wait for a new task.
+- An ignored suggestion → wait for a new task: the ignored Jill (and any Jill already suggested in
+  this chat) stays quiet until a different Jill matches, or Jev names it for a different target
+  (other inputs). A keyword hit never counts as a new task.
 - Never → muted for this repo (one Jill, or all) in `$JILLS_HOME/muted.json`.
 - `/jills quiet` → quiet mode for this chat.
 - At most one suggestion per 3 messages.

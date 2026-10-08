@@ -5,7 +5,7 @@ import { checkNesting, MAX_DEPTH, v1Refusal, type JillDef, type StepDef } from "
 import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
-import { renderTemplate } from "./template.js";
+import { renderShellTemplate, renderTemplate } from "./template.js";
 import { KeyedMutex, parseDuration } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
@@ -64,6 +64,8 @@ export interface EngineOpts {
   plugins: PluginSet;
   lookup: (name: string) => JillDef | undefined;
   onEvent?: EventListener;
+  /** Abort from outside (e.g. the runner got SIGTERM): kills running steps, run ends failed. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -116,6 +118,12 @@ export class RunEngine {
     r.pid = process.pid;
     this.emit("started", undefined, r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
+    const ext = this.o.signal;
+    const onStop = () => this.halt("failed", `runner stopped: ${String(ext?.reason ?? "aborted")}`);
+    if (ext) {
+      if (ext.aborted) onStop();
+      else ext.addEventListener("abort", onStop, { once: true });
+    }
     try {
       if (!jill) throw new Error(`unknown Jill "${r.jill}"`);
       const refusal = v1Refusal(jill);
@@ -145,6 +153,7 @@ export class RunEngine {
       this.finish(this.outcome ?? "failed");
     } finally {
       if (totalTimer) clearTimeout(totalTimer);
+      ext?.removeEventListener("abort", onStop);
     }
     await this.saving;
     return r;
@@ -287,7 +296,9 @@ export class RunEngine {
         const runner: RunnerPlugin | undefined = this.o.plugins.runners.find((p) => p.canRun(step));
         if (!runner) return fail("failed", "no runner plug-in can run this step");
         const vars = { inputs, task: inputs.task, copy, run_id: this.record.id, steps: outputs };
-        const text = step.run !== undefined ? renderTemplate(step.run, vars, { shell: true }) : renderTemplate(step.task ?? "{{task}}", vars);
+        // run: commands never get values in their text, only env var references.
+        const shellTpl = step.run !== undefined ? renderShellTemplate(step.run, vars) : undefined;
+        const text = shellTpl ? shellTpl.text : renderTemplate(step.task ?? "{{task}}", vars);
         const logPath = join(this.record.logDir, `${key.replace(/[^A-Za-z0-9_.#-]/g, "_")}.log`);
         rec.log = logPath;
         this.save();
@@ -300,6 +311,7 @@ export class RunEngine {
         };
         if (copy !== undefined) env.JILLS_COPY = String(copy);
         for (const [k, v] of Object.entries(inputs)) env[`JILLS_INPUT_${k.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`] = v;
+        if (shellTpl) Object.assign(env, shellTpl.env);
         const timeoutMs = parseDuration(step.timeout);
         const res = await runner.run({
           runId: this.record.id,
@@ -313,6 +325,11 @@ export class RunEngine {
           signal: this.abort.signal,
           env,
           config: this.o.config,
+          // Saved at spawn so a sweep can kill the group if this runner dies.
+          onSpawn: (pid) => {
+            rec.pid = pid;
+            this.save();
+          },
         });
         rec.exitCode = res.exitCode;
         rec.pid = res.pid;

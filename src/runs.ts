@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { killGroup } from "./proc.js";
 import { isPidAlive, readJson, sleep, writeJsonAtomic } from "./util.js";
 
 export type RunState = "queued" | "running" | "done" | "failed" | "stuck" | "needs-you";
@@ -106,6 +107,15 @@ export function refreshRecord(home: string, id: string): RunRecord | undefined {
   again.state = "failed";
   again.error = wasQueued ? "runner never started" : "runner process exited without finishing the run";
   again.finished = new Date().toISOString();
+  // The runner is gone, but its step process groups may still be running and
+  // editing the worktree: kill each step group still marked running.
+  for (const s of Object.values(again.steps)) {
+    if (s.state !== "running") continue;
+    if (s.pid) killGroup(s.pid, "SIGKILL");
+    s.state = "failed";
+    s.reason = "runner died; step process group killed";
+    s.finished = again.finished;
+  }
   again.events.push({ at: again.finished, type: "failed", note: again.error });
   saveRecord(home, again);
   return again;

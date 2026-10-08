@@ -78,7 +78,7 @@ const agentRunner: RunnerPlugin = {
     writeFileSync(promptFile, agent.instructions + "\n");
     const c = buildAgentCommand(agent, ctx.text, ctx.step.model, ctx.config, promptFile);
     writeFileSync(ctx.logPath, `[jills] agent ${agent.name} (${agent.path}) via ${c.cmd} model=${c.model ?? "(cli default)"}\n`, { flag: "a" });
-    return spawnLogged({ cmd: c.cmd, args: c.args, cwd: ctx.cwd, logPath: ctx.logPath, env: ctx.env, timeoutMs: ctx.timeoutMs, signal: ctx.signal });
+    return spawnLogged({ cmd: c.cmd, args: c.args, cwd: ctx.cwd, logPath: ctx.logPath, env: ctx.env, timeoutMs: ctx.timeoutMs, signal: ctx.signal, onSpawn: ctx.onSpawn });
   },
 };
 

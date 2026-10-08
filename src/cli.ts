@@ -285,8 +285,25 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "__run": {
       const id = need(rest[0], "<run>");
-      const r = await executeRun(id);
-      return stateExit(r.state);
+      // The runner owns the step process groups: on a stop signal it aborts the
+      // run, which kills every running group (SIGTERM, then SIGKILL), saves the
+      // record as failed and only then exits. A runner that dies anyway is
+      // swept by refreshRecord, which kills the recorded step groups.
+      const ac = new AbortController();
+      const onSignal = (sig: NodeJS.Signals) => {
+        if (ac.signal.aborted) return;
+        ac.abort(sig);
+        // Last resort if the engine does not wind down.
+        setTimeout(() => process.exit(EXIT.error), 15_000).unref();
+      };
+      const sigs: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+      for (const s of sigs) process.on(s, onSignal);
+      try {
+        const r = await executeRun(id, { signal: ac.signal });
+        return stateExit(r.state);
+      } finally {
+        for (const s of sigs) process.off(s, onSignal);
+      }
     }
     default:
       throw new UsageError(`unknown command "${cmd}"`);

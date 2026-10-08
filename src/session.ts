@@ -13,7 +13,7 @@ export interface SessionState {
   dismissed: boolean;
   /** A suggestion was ignored: wait until Jev sees a new task. */
   waitingForNew: boolean;
-  lastSuggestion?: { jill: string; at: number; resolved: boolean };
+  lastSuggestion?: { jill: string; at: number; resolved: boolean; inputs?: Record<string, string> };
   suggested: string[];
   runs: string[];
   updated?: string;

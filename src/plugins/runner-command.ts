@@ -17,6 +17,7 @@ const commandRunner: RunnerPlugin = {
       env: ctx.env,
       timeoutMs: ctx.timeoutMs,
       signal: ctx.signal,
+      onSpawn: ctx.onSpawn,
     }),
 };
 export default commandRunner;

@@ -39,7 +39,7 @@ test("CLI exit codes and core commands", () => {
 
   const dry = jills(home, ["try", "hello", "--dry-run", "--input", "who=x"], { cwd: repo });
   assert.equal(dry.code, 0, dry.err);
-  assert.match(dry.out, /greet \(writes\): bash -c "echo hello x > hello.txt"/);
+  assert.match(dry.out, /greet \(writes\): bash -c "echo hello \\"\$\{JILLS_INPUT_WHO\}\\" > hello.txt".*env JILLS_INPUT_WHO="x"/);
 
   const fail = jills(home, ["start", "fails", "--wait"], { cwd: repo });
   assert.equal(fail.code, 4);

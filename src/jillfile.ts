@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseFrontMatter } from "./frontmatter.js";
 import { parseDuration } from "./util.js";
+import { renderShellTemplate } from "./template.js";
 
 export interface InputDef {
   name: string;
@@ -102,6 +103,13 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
       if (s.inputs !== undefined) {
         if (typeof s.inputs !== "object" || Array.isArray(s.inputs) || s.inputs === null) errs.push(`step ${sname}: inputs must be a map`);
         else stepInputs = Object.fromEntries(Object.entries(s.inputs as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+      }
+      if (s.run !== undefined) {
+        try {
+          renderShellTemplate(String(s.run), { inputs: {} });
+        } catch (e) {
+          errs.push(`step ${sname}: ${(e as Error).message}`);
+        }
       }
       const extra: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(s)) if (!STEP_KEYS.has(k)) extra[k] = v;

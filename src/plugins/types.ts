@@ -62,6 +62,8 @@ export interface StepRunContext {
   signal: AbortSignal;
   env: Record<string, string>;
   config: JillsConfig;
+  /** Call with the process (group) id as soon as the step's process starts. */
+  onSpawn?: (pid: number) => void;
 }
 export interface StepRunResult {
   exitCode: number | null;
@@ -76,7 +78,7 @@ export interface RunnerPlugin {
   name: string;
   canRun(step: StepDef): boolean;
   /** Describe what would run, for dry runs. */
-  describe(ctx: Omit<StepRunContext, "signal" | "logPath">): string;
+  describe(ctx: Omit<StepRunContext, "signal" | "logPath" | "onSpawn">): string;
   run(ctx: StepRunContext): Promise<StepRunResult>;
 }
 

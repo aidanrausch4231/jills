@@ -21,7 +21,7 @@ import {
   type RunRecord,
 } from "./runs.js";
 import { isMuted, loadSession, muteRepo, saveSession, SUGGEST_EVERY, unmuteRepo, updateSession, type SessionState } from "./session.js";
-import { renderTemplate } from "./template.js";
+import { renderShellTemplate, renderTemplate } from "./template.js";
 import { newId } from "./util.js";
 
 export interface BaseOpts {
@@ -93,6 +93,16 @@ function runIsActive(home: string, id: string): boolean {
   return !!r && !TERMINAL.has(r.state);
 }
 
+/** Jev (not keywords) named a Jill with inputs that differ from the ignored suggestion's. */
+function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): boolean {
+  if (m.matcher === "keywords") return false;
+  const given = Object.entries(m.inputs ?? {}).filter(([, v]) => String(v).trim() !== "");
+  if (!given.length) return false;
+  if (!last || last.jill !== m.jill) return true;
+  const prev = last.inputs ?? {};
+  return given.some(([k, v]) => prev[k] !== v);
+}
+
 /**
  * Jev check for one chat message. Applies the anti-nag rules, then asks the
  * matchers (Jev, then keywords). Stateless per call apart from the session file.
@@ -129,11 +139,18 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   if (!m) return quiet("no matcher answered");
   const base = { label: m.label, matcher: m.matcher, confidence: m.confidence };
   if (m.label !== "new" || !m.jill) return quiet(m.label === "same" ? "same task as before" : "just talk", base);
-  s.waitingForNew = false;
+  if (s.waitingForNew) {
+    // Ignored → wait for a new task: the ignored Jill (or one already suggested
+    // here) stays quiet until a different Jill matches, or Jev names the same
+    // Jill for a different target (other inputs). Keyword hits are never "new".
+    const ignored = new Set([...(s.lastSuggestion ? [s.lastSuggestion.jill] : []), ...s.suggested]);
+    if (ignored.has(m.jill) && !isNewTarget(m, s.lastSuggestion)) return quiet("ignored; waiting for a new task", { ...base, jill: m.jill });
+    s.waitingForNew = false;
+  }
   if (m.confidence < c.config.jev.threshold) return quiet(`not confident enough (${m.confidence} < ${c.config.jev.threshold})`, { ...base, jill: m.jill });
   const j = c.lookup(m.jill);
   if (!j) return quiet(`matcher named unknown Jill ${m.jill}`, base);
-  s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false };
+  s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false, inputs: m.inputs ?? {} };
   s.suggested.push(j.name);
   saveSession(home, s);
   const inputs = m.inputs ?? {};
@@ -231,12 +248,12 @@ export async function start(jillName: string, o: StartOpts = {}): Promise<RunRec
 }
 
 /** Execute a queued run in this process (used by the detached runner). */
-export async function executeRun(id: string, o: BaseOpts & { onEvent?: EventListener } = {}): Promise<RunRecord> {
+export async function executeRun(id: string, o: BaseOpts & { onEvent?: EventListener; signal?: AbortSignal } = {}): Promise<RunRecord> {
   const c = await context(o);
   const r = loadRecord(c.config.home, id);
   if (!r) throw new Error(`no run ${id}`);
   if (r.state !== "queued") throw new Error(`run ${id} is ${r.state}, not queued`);
-  return new RunEngine(r, { config: c.config, plugins: c.plugins, lookup: c.lookup, onEvent: o.onEvent }).execute();
+  return new RunEngine(r, { config: c.config, plugins: c.plugins, lookup: c.lookup, onEvent: o.onEvent, signal: o.signal }).execute();
 }
 
 /** Run a Jill in the foreground, in this process. Resolves with the final record. */
@@ -385,14 +402,23 @@ export async function dryRun(jillName: string, o: StartOpts = {}): Promise<strin
       }
       const runner = c.plugins.runners.find((p) => p.canRun(s));
       const vars = { inputs, task: inputs.task, copy: s.copies > 1 ? 1 : undefined, run_id: "<run-id>", steps: {} };
-      const text = s.run !== undefined ? renderTemplate(s.run, vars, { shell: true }) : renderTemplate(s.task ?? "{{task}}", vars);
+      let text: string;
+      let tplEnv: Record<string, string> = {};
+      try {
+        if (s.run !== undefined) ({ text, env: tplEnv } = renderShellTemplate(s.run, vars));
+        else text = renderTemplate(s.task ?? "{{task}}", vars);
+      } catch (e) {
+        lines.push(`${indent}- ${s.name}: ERROR: ${(e as Error).message}`);
+        continue;
+      }
+      const envText = Object.keys(tplEnv).length ? `  env ${Object.entries(tplEnv).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ")}` : "";
       let desc: string;
       try {
         desc = runner ? runner.describe({ runId: "<run-id>", stepKey: s.name, step: s, jill, cwd: "<workspace>", text, timeoutMs: undefined, env: {}, config: c.config }) : "NO RUNNER";
       } catch (e) {
         desc = `ERROR: ${(e as Error).message}`;
       }
-      lines.push(`${indent}- ${s.name}${meta ? ` (${meta})` : ""}: ${desc}`);
+      lines.push(`${indent}- ${s.name}${meta ? ` (${meta})` : ""}: ${desc}${envText}`);
     }
   };
   walk(j, "", j.worktree);

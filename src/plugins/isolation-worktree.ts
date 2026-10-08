@@ -43,6 +43,14 @@ const worktreeIsolation: IsolationPlugin = {
     if (!parent.branch || !child.branch || !parent.repo) throw new Error("merge-back needs git workspaces");
     const repo = parent.repo;
     const parentRef = `refs/heads/${parent.branch}`;
+    // The parent worktree must be clean before its files move: a step without
+    // `writes: true` may have left changes there. Commit them (git stays outside
+    // agents), so the merge sees them and a clash becomes a normal conflict.
+    const dirty = await git(parent.dir, ["status", "--porcelain"]);
+    if (dirty) {
+      await git(parent.dir, ["add", "-A"]);
+      await git(parent.dir, ["commit", "-q", "--no-verify", "-m", `${message} (pending changes in the run worktree)`]);
+    }
     const oldHead = await git(repo, ["rev-parse", parentRef]);
     const childHead = await git(repo, ["rev-parse", `refs/heads/${child.branch}`]);
     // Child has nothing new: done.
@@ -57,10 +65,17 @@ const worktreeIsolation: IsolationPlugin = {
     if (mt.code !== 0) throw new Error(`git merge-tree failed: ${mt.stderr.trim()}`);
     const tree = mt.stdout.split("\n")[0]!.trim();
     const commit = await git(repo, ["commit-tree", tree, "-p", oldHead, "-p", childHead, "-m", message]);
-    // Compare-and-swap: only move the parent branch if nobody else moved it.
-    await git(repo, ["update-ref", "-m", `jills: ${message}`, parentRef, commit, oldHead]);
-    // Bring the parent worktree's index and files up to the new commit.
-    await git(parent.dir, ["read-tree", "-m", "-u", oldHead, commit]);
+    // Move files, index and branch together. A fast-forward to `commit` (whose
+    // first parent is oldHead) only succeeds while the branch still points at
+    // oldHead, so it doubles as the compare-and-swap; if the worktree cannot be
+    // updated, git changes neither the files nor the branch.
+    const ff = await gitRaw(parent.dir, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "-q", commit]);
+    if (ff.code !== 0) {
+      const now = await git(repo, ["rev-parse", parentRef]);
+      throw new Error(
+        `could not move ${parent.branch} to the merge of ${child.branch}${now !== oldHead ? " (the branch moved meanwhile)" : ""}: ${ff.stderr.trim() || ff.stdout.trim()}`,
+      );
+    }
     return { ok: true, commit };
   },
 

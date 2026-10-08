@@ -159,7 +159,7 @@ test("worktree: true outside a git repo fails clearly", async () => {
   assert.match(r.error!, /not inside a git repository/);
 });
 
-test("inputs are shell-quoted in run: commands", async () => {
+test("inputs never reach the shell text of run: commands (unquoted placeholder)", async () => {
   const home = tmpHome();
   const ws = tmp();
   writeJill(home, "quote", "worktree: false\ninputs: [x]\nsteps:\n  a: {run: 'echo {{inputs.x}} > out.txt'}");

@@ -13,9 +13,11 @@ export interface SpawnOpts {
   signal?: AbortSignal;
   /** Grace period between SIGTERM and SIGKILL. */
   killGraceMs?: number;
+  /** Called with the pid (= process group id) right after spawn. */
+  onSpawn?: (pid: number) => void;
 }
 
-function killGroup(pid: number, sig: NodeJS.Signals) {
+export function killGroup(pid: number, sig: NodeJS.Signals) {
   try {
     process.kill(-pid, sig);
   } catch {
@@ -47,6 +49,13 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
       detached: true,
     });
     const pid = child.pid;
+    if (pid) {
+      try {
+        o.onSpawn?.(pid);
+      } catch {
+        /* never break a step */
+      }
+    }
     const stop = () => {
       if (!pid) return;
       killGroup(pid, "SIGTERM");
