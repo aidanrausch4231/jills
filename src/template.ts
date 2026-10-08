@@ -52,15 +52,13 @@ export interface ShellTemplate {
  */
 export function renderShellTemplate(tpl: string, vars: TemplateVars): ShellTemplate {
   const env: Record<string, string> = {};
-  const keyOfName = new Map<string, string>();
   const nameOfKey = new Map<string, string>();
   const varName = (key: string): string => {
     const hit = nameOfKey.get(key);
     if (hit) return hit;
     const { value, env: base } = resolveKey(vars, key);
     let name = base;
-    for (let i = 2; keyOfName.has(name); i++) name = `${base}_${i}`;
-    keyOfName.set(name, key);
+    for (let i = 2; name in env; i++) name = `${base}_${i}`;
     nameOfKey.set(key, name);
     env[name] = value ?? "";
     return name;
@@ -90,13 +88,9 @@ export function renderShellTemplate(tpl: string, vars: TemplateVars): ShellTempl
     const t = top();
     const code = t.kind === "plain" || t.kind === "subst";
     const push = (c: Ctx) => void stack.push(c);
-    if (two.length === 2 && ch === "\\" && t.kind !== "single") {
-      out += two; // an escaped character never opens or closes anything
-      i += 2;
-      continue;
-    }
-    if ((code && two === "$'") || ((code || t.kind === "double") && two === "$(")) {
-      push(two === "$'" ? { kind: "ansi" } : { kind: "subst", depth: 0 });
+    const escaped = two.length === 2 && ch === "\\" && t.kind !== "single"; // never opens or closes anything
+    if (escaped || (code && two === "$'") || ((code || t.kind === "double") && two === "$(")) {
+      if (!escaped) push(two === "$'" ? { kind: "ansi" } : { kind: "subst", depth: 0 });
       out += two;
       i += 2;
       continue;

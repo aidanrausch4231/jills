@@ -1,26 +1,7 @@
-import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { GitFacts, IsolationPlugin, MergeResult, Workspace } from "./types.js";
-
-const IDENTITY = { GIT_AUTHOR_NAME: "Jills", GIT_AUTHOR_EMAIL: "jills@localhost", GIT_COMMITTER_NAME: "Jills", GIT_COMMITTER_EMAIL: "jills@localhost" };
-
-/** Run git as Jills; never throws for a non-zero exit. */
-function gitRaw(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const env = { ...process.env, ...IDENTITY, GIT_TERMINAL_PROMPT: "0" };
-  return new Promise((resolve) =>
-    execFile("git", args, { cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) =>
-      resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: String(stdout), stderr: String(stderr) }),
-    ),
-  );
-}
-
-/** Run git; throws with stderr on a non-zero exit. */
-async function git(cwd: string, args: string[]): Promise<string> {
-  const r = await gitRaw(cwd, args);
-  if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
-  return r.stdout.trim();
-}
+import { checkout, git, gitRaw } from "./git.js";
+import type { IsolationPlugin, MergeCheck, MergeResult, MergeStart, Workspace } from "./types.js";
 
 /** Git work on one workspace dir runs one at a time (parallel steps commit and merge back). */
 const tails = new Map<string, Promise<unknown>>();
@@ -41,7 +22,7 @@ function safe(s: string): string {
  * $JILLS_HOME/worktrees/. Parallel writers get child worktrees branched from the
  * parent branch; merge-back uses merge-tree --write-tree + commit-tree + a CAS
  * update-ref, so a conflict never touches the parent. Never merges into the
- * user's branch itself (a `merges: true` step does, checked by core via facts()). Worktrees are kept.
+ * user's branch itself: a `merges: true` step does, judged by mergeStart/mergeCheck. Worktrees are kept.
  */
 const worktreeIsolation: IsolationPlugin = {
   slot: "isolation",
@@ -57,7 +38,7 @@ const worktreeIsolation: IsolationPlugin = {
     const branch = `jills/${safe(jill)}-${runId}`;
     const dir = join(config.home, "worktrees", `${safe(jill)}-${runId}`);
     mkdirSync(join(config.home, "worktrees"), { recursive: true });
-    const base = (await facts(root, "HEAD")).branch;
+    const base = (await checkout(root)).branch;
     await git(root, ["worktree", "add", "-b", branch, dir, "HEAD"]);
     return { dir, branch, repo: root, base, isolated: true };
   },
@@ -72,14 +53,40 @@ const worktreeIsolation: IsolationPlugin = {
 
   mergeBack: (parent, child, message) => locked(parent.dir, () => mergeBack(parent, child, message)),
   commit: (ws, message) => locked(ws.dir, () => commit(ws, message)),
-  facts,
+  mergeStart,
+  mergeCheck,
 };
 
-/** Branch and dirty flag of the checkout at `dir`; commit, parents and tree of `rev` (for merges: true steps). */
-async function facts(dir: string, rev: string): Promise<GitFacts> {
-  const [sym, dirty, line] = await Promise.all([gitRaw(dir, ["symbolic-ref", "--short", "-q", "HEAD"]), git(dir, ["status", "--porcelain", "--untracked-files=no"]), git(dir, ["log", "-1", "--format=%H %T %P", rev])]);
+/** Before a merges: true step: the user's checkout must be clean and on `base`. Returns the base tip and the run commit. */
+async function mergeStart(ws: Workspace, base: string): Promise<MergeStart | string> {
+  const repo = ws.repo!;
+  const [b, pre] = await Promise.all([checkout(repo), git(ws.dir, ["rev-parse", "HEAD"])]);
+  if (b.dirty) return `your checkout ${repo} has uncommitted changes; nothing was merged`;
+  if (b.branch !== base) return `your checkout ${repo} is on another branch (${b.branch ?? "detached HEAD"}, not ${base}); nothing was merged`;
+  return { tip: b.head, pre };
+}
+
+/**
+ * After a merges: true step. "merged": `base` got exactly one new commit on the
+ * old tip whose tree is the squash of the run commit (merge-tree of tip and pre),
+ * or there was nothing to merge. "untouched": nothing changed. "bad": anything
+ * else (run branch changed, checkout dirty / elsewhere / behind, wrong commit).
+ */
+async function mergeCheck(ws: Workspace, base: string, { tip, pre }: MergeStart): Promise<MergeCheck> {
+  const repo = ws.repo!;
+  const [run, b, line, mt] = await Promise.all([
+    git(ws.dir, ["rev-parse", "HEAD"]),
+    checkout(repo),
+    git(repo, ["log", "-1", "--format=%H %T %P", `refs/heads/${base}`]),
+    gitRaw(repo, ["merge-tree", "--write-tree", tip, pre]),
+  ]);
   const [commit, tree, ...parents] = line.split(" ");
-  return { branch: sym.code === 0 ? sym.stdout.trim() : undefined, dirty: dirty !== "", commit: commit!, tree: tree!, parents };
+  const want = mt.code === 0 ? mt.stdout.split("\n")[0]!.trim() : undefined;
+  if (run !== pre) return { state: "bad", reason: `the step changed the run branch ${ws.branch}` };
+  if (b.dirty || b.branch !== base || b.head !== commit) return { state: "bad", reason: `${repo} must be clean, on ${base}, at its new tip` };
+  if (commit === tip) return { state: want === tree ? "merged" : "untouched" };
+  if (parents.join() === tip && want === tree) return { state: "merged" };
+  return { state: "bad", reason: `${base} must get exactly one new commit on ${tip.slice(0, 12)} with the squash of ${ws.branch}` };
 }
 
 async function mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult> {

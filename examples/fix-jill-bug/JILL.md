@@ -53,4 +53,4 @@ Runs on its own branch `jills/fix-jill-bug-<run>`. The review loops back to the 
 says `VERDICT: clean` (at most 3 rounds). Then the `merge` step (the only step with `merges: true`)
 squash-merges the run branch into the branch you started the run from. Jills refuses to merge into a
 checkout with uncommitted changes or on another branch, and accepts the merge only if your branch got
-exactly one new commit whose tree equals the run branch.
+exactly one new commit holding the squash of the run branch. A conflict sends the work back to build.

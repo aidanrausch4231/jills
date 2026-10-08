@@ -124,3 +124,35 @@ steps:
   assert.match(r.steps.review!.reason!, /VERDICT: fix the tests/);
   assert.equal(r.steps["review@2"]!.state, "done");
 });
+
+test("R1: a sibling still running when a loop starts is stale: its result is dropped and it reruns", async () => {
+  const home = tmpHome();
+  const ws = tmp();
+  writeJill(home, "sib", `worktree: false
+steps:
+  build: {run: 'echo {{round}} > b.txt'}
+  review: {run: '[ "$(cat b.txt)" = 2 ] || { echo fail; exit 1; }', needs: [build], on_fail: {back_to: build}}
+  test: {run: 'cp b.txt tested.txt; sleep 1', needs: [build]}
+  final: {run: 'cat tested.txt', needs: [review, test]}`);
+  const r = await runNow("sib", { home, cwd: ws });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps.test!.state, "skipped");
+  assert.match(r.steps.test!.reason!, /stale/);
+  assert.equal(r.steps["test@2"]!.state, "done");
+  assert.equal(readFileSync(join(ws, "tested.txt"), "utf8").trim(), "2");
+  assert.equal(readFileSync(r.steps.final!.log!, "utf8").trim(), "2");
+});
+
+test("a stale sibling that fails is dropped too; it never stops the run", async () => {
+  const home = tmpHome();
+  writeJill(home, "sibfail", `worktree: false
+steps:
+  build: {run: 'echo {{round}} > b.txt'}
+  review: {run: '[ "$(cat b.txt)" = 2 ]', needs: [build], on_fail: {back_to: build}}
+  test: {run: 'sleep 1; [ {{round}} != 1 ]', needs: [build]}`);
+  const r = await runNow("sibfail", { home, cwd: tmp() });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps.test!.state, "skipped");
+  assert.equal(r.steps.test!.exitCode, 1, "round 1 of test really failed");
+  assert.equal(r.steps["test@2"]!.state, "done");
+});

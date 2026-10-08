@@ -132,6 +132,7 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   for (const s of steps) {
     if (s.onFail && !ancestors(steps, s.name).has(s.onFail.backTo)) errs.push(`step ${s.name}: on_fail back_to "${s.onFail.backTo}" must be an earlier step it needs (directly or not)`);
     if (s.merges && data.worktree === false) errs.push(`step ${s.name}: merges: true needs worktree: true`);
+    if (s.merges && (s.copies !== 1 || steps.some((x) => x !== s && !ancestors(steps, s.name).has(x.name)))) errs.push(`step ${s.name}: merges: true must be the single final step (every other step comes before it) without copies`);
   }
   tryAll(errs, "", () => parseDuration(data.timeout));
   const box = data.box == null || data.box === false ? undefined : data.box;
@@ -216,6 +217,7 @@ export function checkNesting(root: JillDef, lookup: (name: string) => JillDef | 
         throw new Error(`Jill recursion refused: ${[...stack, s.jill].join(" -> ")} (a Jill may not call itself, directly or indirectly)`);
       const child = lookup(s.jill);
       if (!child) throw new Error(`step ${j.name}.${s.name}: unknown Jill "${s.jill}"`);
+      if (child.steps.some((x) => x.merges)) throw new Error(`nested Jill "${child.name}" has a merges: true step; only the outermost Jill may merge`);
       if (child.box && child.box !== root.box)
         throw new Error(`nested Jill "${child.name}" sets box: ${child.box} but outermost Jill "${root.name}" uses box: ${root.box ?? "none"}`);
       walk(child, [...stack, child.name]);

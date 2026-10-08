@@ -70,8 +70,8 @@ export interface Workspace {
   base?: string;
   isolated: boolean;
 }
-/** A git revision as `merges: true` steps see it: the checkout's branch and dirty flag, the commit, its parents and tree. */
-export type GitFacts = { branch?: string; dirty: boolean; commit: string; parents: string[]; tree: string };
+export type MergeStart = { tip: string; pre: string };
+export type MergeCheck = { state: "merged" | "untouched" | "bad"; reason?: string };
 export type MergeResult = { ok: true; commit: string } | { ok: false; conflicts: string[]; message: string };
 export interface IsolationPlugin {
   slot: "isolation";
@@ -85,8 +85,9 @@ export interface IsolationPlugin {
   mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult>;
   /** Commit the workspace's changes; returns the commit or undefined when clean. */
   commit(ws: Workspace, message: string): Promise<string | undefined>;
-  /** Optional, needed for `merges: true` steps: facts about `rev` in the checkout at `dir`. */
-  facts?(dir: string, rev: string): Promise<GitFacts>;
+  /** Optional, both needed for `merges: true`: mergeStart refuses (reason) a dirty or switched user checkout, else gives the base tip and run commit; mergeCheck judges the result. */
+  mergeStart?(ws: Workspace, base: string): Promise<MergeStart | string>;
+  mergeCheck?(ws: Workspace, base: string, start: MergeStart): Promise<MergeCheck>;
 }
 // ---- check ----
 export type CheckInput = { step: StepDef; result: StepRunResult; logPath: string };

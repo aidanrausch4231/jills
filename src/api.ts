@@ -75,7 +75,8 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
     }
     return undefined;
   };
-  const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree, merges: j.steps.some((s) => s.merges) }));
+  const merges = (j: JillDef | undefined, seen = new Set<string>()): boolean => !!j && j.steps.some((s) => s.merges || (!!s.jill && !seen.has(s.jill) && merges(c.lookup(s.jill), seen.add(s.jill))));
+  const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree, merges: merges(j) }));
   const input = { session: o.session, message: o.message, recent: (o.recent ?? []).slice(-3), repo: await resolveRepo(o.repo, o.cwd) };
   const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, match });
   return s.jill && s.inputs ? { ...s, inputs: declaredInputs(c.lookup(s.jill), s.inputs) } : s;

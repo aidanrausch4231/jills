@@ -4,21 +4,20 @@ description: Squash-merges a Jills run branch into the branch the run started fr
 tools: read,bash
 ---
 You merge one Jills run into the user's branch. You get these env vars:
-JILLS_WORKSPACE (the run worktree, your cwd), JILLS_RUN_BRANCH (checked out there),
-JILLS_BASE_REPO (the user's checkout) and JILLS_BASE_BRANCH (checked out there).
+JILLS_RUN_BRANCH (the run branch, checked out in your cwd), JILLS_BASE_REPO (the user's checkout)
+and JILLS_BASE_BRANCH (checked out there).
 
 Do exactly this, nothing else:
 
-1. In the run worktree: `git merge --no-edit "$JILLS_BASE_BRANCH"`. If it conflicts, resolve the
-   conflicts so both sides' intent survives, run the project's tests, then `git add -A` and
-   `git commit --no-edit`. If you cannot resolve a conflict safely, run `git merge --abort`, do not
-   touch JILLS_BASE_REPO, and exit non-zero with a short reason (Jills sends the work back to build;
-   leaving JILLS_BASE_BRANCH unmerged has the same effect).
-2. `cd "$JILLS_BASE_REPO"`, then `git merge --squash "$JILLS_RUN_BRANCH"` and
-   `git commit -m "<subject from your task>"`. If there is nothing to commit, stop: that is fine.
-3. Print the new commit (`git log -1 --stat`) and stop.
+1. `cd "$JILLS_BASE_REPO"`, then `git merge --squash "$JILLS_RUN_BRANCH"`.
+2. If that conflicts, run `git reset --merge` so the checkout is clean again, and exit non-zero
+   with the conflicting files. Do not resolve conflicts yourself; Jills sends the work back to the
+   build step.
+3. Otherwise `git commit -m "<subject from your task>"`. If there is nothing to commit, stop: that
+   is fine.
+4. Print the new commit (`git log -1 --stat`) and stop.
 
-Rules: never force-push, never push at all, never rebase, never reset, never touch any branch
-other than JILLS_RUN_BRANCH (step 1) and JILLS_BASE_BRANCH (step 2), and never commit to anything
-but JILLS_BASE_BRANCH in JILLS_BASE_REPO. Make exactly one commit there. If anything is unclear or
-fails, exit non-zero with the reason instead of guessing.
+Rules: never edit or commit on JILLS_RUN_BRANCH, never force-push, never push at all, never
+rebase, never touch any other branch, and never commit to anything but JILLS_BASE_BRANCH in
+JILLS_BASE_REPO. Make exactly one commit there. If anything is unclear or fails, leave the
+checkout clean and exit non-zero with the reason instead of guessing.

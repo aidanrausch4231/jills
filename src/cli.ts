@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { once } from "node:events";
 import { realpathSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -30,15 +31,12 @@ const stateExit = (s: RunState) => (s === "done" ? EXIT.ok : s === "stuck" ? EXI
 async function readStdinTurns(): Promise<Turn[]> {
   if (process.stdin.isTTY) return [];
   const chunks: Buffer[] = [];
-  const read = (async () => {
-    for await (const c of process.stdin) chunks.push(c as Buffer);
-    return true;
-  })().catch(() => false);
-  // Wait at most 500 ms; the unref'd timer never holds the process open.
-  const got = await Promise.race([read, delay(500, undefined, { ref: false }).then(() => chunks.length > 0)]);
+  process.stdin.on("data", (c: Buffer) => chunks.push(c));
+  // Until end of input, at most 500 ms; the unref'd timer never holds the process open.
+  await Promise.race([once(process.stdin, "end").catch(() => undefined), delay(500, undefined, { ref: false })]);
   process.stdin.destroy();
   try {
-    const v: unknown = got ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : [];
+    const v: unknown = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : [];
     return (Array.isArray(v) ? v : []).filter((t) => typeof t?.text === "string").map((t) => ({ role: t.role === "assistant" ? "assistant" : "user", text: t.text }));
   } catch {
     return [];
