@@ -6,12 +6,31 @@ import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate } from "./template.js";
-import { KeyedMutex, parseDuration } from "./util.js";
+import { clampTimerMs, KeyedMutex, MAX_TIMER_MS, parseDuration } from "./util.js";
+import { procStartToken } from "./proc.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
 
 const OUTPUT_LIMIT = 8000;
+/** How often a runner writes its heartbeat into the run record. */
+export const HEARTBEAT_MS = 5_000;
+
+/**
+ * The total time limit a run actually uses: the Jill's timeout, else config
+ * default_timeout, else 2h. A value that parses to <= 0 falls through to the
+ * next one; the result is clamped to the largest timer Node allows. `label`
+ * names the value used (recorded as timeLimit).
+ */
+export function totalLimit(jillTimeout: unknown, configDefault: unknown): { label: string; ms: number } {
+  for (const v of [jillTimeout, configDefault, DEFAULT_TIMEOUT]) {
+    const ms = parseDuration(v);
+    if (ms === undefined || !(ms > 0)) continue;
+    if (ms > MAX_TIMER_MS) return { label: `${MAX_TIMER_MS}ms`, ms: MAX_TIMER_MS };
+    return { label: String(v), ms };
+  }
+  return { label: DEFAULT_TIMEOUT, ms: parseDuration(DEFAULT_TIMEOUT)! };
+}
 
 /** Steps that write and may run at the same time as another writer → child worktrees. */
 export function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | undefined): Set<string> {
@@ -116,6 +135,20 @@ export class RunEngine {
     r.state = "running";
     r.started = now();
     r.pid = process.pid;
+    r.pidStart = procStartToken(process.pid);
+    // Heartbeat: wall time + this runner's own monotonic elapsed time, so an
+    // observer can tell a live runner after a suspend/clock jump from a hung one.
+    const t0 = performance.now();
+    const beat = () => {
+      r.heartbeat = { at: now(), elapsedMs: Math.round(performance.now() - t0) };
+    };
+    beat();
+    const heart = setInterval(() => {
+      if (TERMINAL.has(r.state)) return;
+      beat();
+      this.save();
+    }, HEARTBEAT_MS);
+    heart.unref();
     this.emit("started", undefined, r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
     const ext = this.o.signal;
@@ -126,21 +159,22 @@ export class RunEngine {
     }
     try {
       if (!jill) throw new Error(`unknown Jill "${r.jill}"`);
-      const refusal = v1Refusal(jill);
+      const refusal = v1Refusal(jill, this.o.plugins.isolation);
       if (refusal) throw new Error(refusal);
       checkNesting(jill, this.o.lookup);
       // Every run has a total time limit: the Jill's, else config default_timeout
       // (default 2h). The deadline is saved so `jills wait` can report stuck
       // even when this runner hangs past it (see refreshRecord).
-      const limit = jill.timeout ?? this.o.config.default_timeout ?? DEFAULT_TIMEOUT;
-      const totalMs = parseDuration(limit) ?? parseDuration(DEFAULT_TIMEOUT)!;
-      r.timeLimit = String(limit);
+      const { label, ms: totalMs } = totalLimit(jill.timeout, this.o.config.default_timeout);
+      r.timeLimit = label;
+      r.timeLimitMs = totalMs;
       r.deadline = new Date(Date.now() + totalMs).toISOString();
       this.save();
-      totalTimer = setTimeout(() => this.halt("stuck", `total time limit ${String(limit)} reached`), totalMs);
+      totalTimer = setTimeout(() => this.halt("stuck", `total time limit ${label} reached`), totalMs);
       let ws: Workspace;
-      if (jill.worktree) {
-        const isoName = typeof jill.extra.isolation === "string" ? jill.extra.isolation : "worktree";
+      if (jill.worktree || jill.box) {
+        // box: <name> picks that isolation extension (checked by v1Refusal above).
+        const isoName = jill.box ?? (typeof jill.extra.isolation === "string" ? jill.extra.isolation : "worktree");
         const iso = this.o.plugins.isolation.get(isoName);
         if (!iso) throw new Error(`no isolation plug-in "${isoName}"`);
         this.isolation = iso;
@@ -159,6 +193,7 @@ export class RunEngine {
       this.finish(this.outcome ?? "failed");
     } finally {
       if (totalTimer) clearTimeout(totalTimer);
+      clearInterval(heart);
       ext?.removeEventListener("abort", onStop);
     }
     await this.saving;
@@ -318,7 +353,8 @@ export class RunEngine {
         if (copy !== undefined) env.JILLS_COPY = String(copy);
         for (const [k, v] of Object.entries(inputs)) env[`JILLS_INPUT_${k.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`] = v;
         if (shellTpl) Object.assign(env, shellTpl.env);
-        const timeoutMs = parseDuration(step.timeout);
+        const stepMs = parseDuration(step.timeout);
+        const timeoutMs = stepMs !== undefined && stepMs > 0 ? clampTimerMs(stepMs) : undefined;
         const res = await runner.run({
           runId: this.record.id,
           stepKey: key,
@@ -334,11 +370,15 @@ export class RunEngine {
           // Saved at spawn so a sweep can kill the group if this runner dies.
           onSpawn: (pid) => {
             rec.pid = pid;
+            rec.pidStart = procStartToken(pid);
             this.save();
           },
         });
         rec.exitCode = res.exitCode;
-        rec.pid = res.pid;
+        if (res.pid !== rec.pid) {
+          rec.pid = res.pid;
+          rec.pidStart = undefined;
+        }
         const checkNames = ["exit-code", ...(Array.isArray(step.extra.checks) ? step.extra.checks.map(String) : [])];
         for (const cn of checkNames) {
           const c = this.o.plugins.checks.get(cn);

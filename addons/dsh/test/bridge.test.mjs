@@ -74,8 +74,8 @@ test('Jev request shape and inputs come through the card', async () => {
   try {
     jevRequests.length = 0
     jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
-    const { bridge } = fixture({ jev: true })
-    const card = await bridge.suggest(msg({ text: 'greet Aidan for me' }))
+    const { bridge, repo } = fixture({ jev: true })
+    const card = await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
     assert.equal(card.kind, 'suggest')
     assert.equal(card.matcher, 'jev')
     assert.deepEqual(card.inputs, { who: 'Aidan' })
@@ -92,9 +92,9 @@ test('talk and history messages stay quiet; history never reaches Jev', async ()
   try {
     jevRequests.length = 0
     jevReply = { label: 'talk', confidence: 0.9 }
-    const { bridge } = fixture({ jev: true })
-    assert.equal((await bridge.suggest(msg({ text: 'how are you?' }))).kind, 'quiet')
-    const old = await bridge.suggest(msg({ messageId: 'old', sentAt: Date.now() - 60 * 60_000 }))
+    const { bridge, repo } = fixture({ jev: true })
+    assert.equal((await bridge.suggest(msg({ text: 'how are you?', cwd: repo }))).kind, 'quiet')
+    const old = await bridge.suggest(msg({ messageId: 'old', sentAt: Date.now() - 60 * 60_000, cwd: repo }))
     assert.equal(old.kind, 'quiet')
     assert.match(old.reason, /old message/)
     assert.equal((await bridge.suggest(msg({ messageId: 'blank', text: '   ' }))).kind, 'quiet')
@@ -103,12 +103,12 @@ test('talk and history messages stay quiet; history never reaches Jev', async ()
 })
 
 test('Not this closes the card and quiets the chat', async () => {
-  const { bridge } = fixture()
-  await bridge.suggest(msg())
+  const { bridge, repo } = fixture()
+  await bridge.suggest(msg({ cwd: repo }))
   const closed = await bridge.dismiss({ sessionId: 'sess-1', messageId: 'm1', cwd: '' })
   assert.equal(closed.kind, 'closed')
   assert.match(closed.note, /quiet in this chat/)
-  const later = await bridge.suggest(msg({ messageId: 'm9', text: 'say hello again' }))
+  const later = await bridge.suggest(msg({ messageId: 'm9', text: 'say hello again', cwd: repo }))
   assert.equal(later.kind, 'quiet')
   assert.match(later.reason, /dismissed/)
 })
@@ -154,8 +154,8 @@ test('Start runs the Jill once; the status line follows it to done with a branch
 })
 
 test('Start with a bad repo returns an error card', async () => {
-  const { bridge } = fixture()
-  await bridge.suggest(msg())
+  const { bridge, repo } = fixture()
+  await bridge.suggest(msg({ cwd: repo }))
   const card = await bridge.start({ sessionId: 'sess-1', messageId: 'm1', jill: 'hello', inputs: {}, cwd: join(root, 'missing') })
   assert.equal(card.kind, 'error')
   assert.match(card.note, /does not exist/)
@@ -172,7 +172,7 @@ test('auto mode starts the Jill from the suggestion itself', async () => {
 
 test('a missing library gives quiet cards', async () => {
   const bridge = new JillsBridge(loadCore(join(root, 'nope/index.js')), { home: join(root, 'nohome') })
-  const card = await bridge.suggest(msg())
+  const card = await bridge.suggest(msg({ cwd: root }))
   assert.equal(card.kind, 'quiet')
   assert.match(card.reason, /jills unavailable/)
   assert.ok(!existsSync(join(root, 'nohome')))
@@ -223,12 +223,43 @@ test('empty or missing cwd never falls back to the Host folder: Start refuses wi
   assert.ok(!existsSync(join(home, 'muted.json')), 'no mute for the Host folder repo')
 })
 
-test('auto mode with no cwd refuses instead of running in the Host folder', async () => {
+test('auto mode with no cwd stays quiet instead of running in the Host folder', async () => {
   const { home, bridge } = fixture({ auto: true })
   const card = await bridge.suggest(msg({ cwd: '' }))
-  assert.equal(card.kind, 'error')
+  assert.equal(card.kind, 'quiet')
   assert.equal(card.note, NO_WORKSPACE)
   assert.ok(noRuns(home))
+})
+
+test('a worktree: false Jill gives a card warning; worktree Jills none', async () => {
+  for (const [worktree, warning] of [[false, 'no worktree: edits your checkout directly'], [true, '']]) {
+    const fakeCore = async () => ({
+      async suggest() { return { action: 'suggest', reason: 'fits', jill: 'hello', inputs: {}, auto: false, worktree, ...(worktree ? {} : { warning }) } },
+      async listJills() { return [{ name: 'hello', inputs: [] }] },
+    })
+    const bridge = new JillsBridge(fakeCore, { home: join(root, 'fake-home') })
+    const card = await bridge.suggest({ sessionId: 's', messageId: `w${worktree}`, text: 'say hello', cwd: '/r', sentAt: Date.now() })
+    assert.equal(card.kind, 'suggest')
+    assert.equal(card.warning, warning)
+  }
+})
+
+test('empty cwd never reaches core.suggest (no Host cwd ever reaches core)', async () => {
+  const calls = []
+  const fakeCore = async () => ({
+    async suggest(o) { calls.push(o); return { action: 'quiet', reason: 'x' } },
+    async listJills() { return [] },
+  })
+  const bridge = new JillsBridge(fakeCore, { home: join(root, 'fake-home') })
+  for (const [i, cwd] of ['', '   ', undefined].entries()) {
+    const card = await bridge.suggest({ sessionId: 's', messageId: `e${i}`, text: 'say hello to the team', cwd, sentAt: Date.now() })
+    assert.equal(card.kind, 'quiet')
+    assert.equal(card.note, NO_WORKSPACE)
+  }
+  assert.deepEqual(calls, [], 'core.suggest was never called without a workspace')
+  await bridge.suggest({ sessionId: 's', messageId: 'ok', text: 'say hello', cwd: '/some/repo', sentAt: Date.now() })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].cwd, '/some/repo')
 })
 
 test('Jev gets the last 3 turns before the message, not just the new message', async () => {
@@ -240,8 +271,8 @@ test('Jev gets the last 3 turns before the message, not just the new message', a
       { role: 'user', text: 'u1' }, { role: 'assistant', text: 'a1' }, { role: 'user', text: 'u2' }, { role: 'assistant', text: 'a2' },
     ]
     const agent = fakeAgent({ turns })
-    const { bridge } = fixture({ jev: true, agent })
-    await bridge.suggest(msg({ text: 'greet Aidan for me' }))
+    const { bridge, repo } = fixture({ jev: true, agent })
+    await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
     assert.deepEqual(agent.asked, [['sess-1', 'm1']])
     const user = jevRequests[0].body.messages[1].content
     assert.match(user, /Last turns: \[\{"role":"assistant","text":"a1"\},\{"role":"user","text":"u2"\},\{"role":"assistant","text":"a2"\}\]/)

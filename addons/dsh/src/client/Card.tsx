@@ -49,6 +49,7 @@ export function CardView({ card, busy, editing, values, onEdit, onValue, handler
     </header>
     <strong className="jills-name">{card.jill}</strong>
     {card.description && <p className="jills-desc">{card.description}</p>}
+    {card.warning && <p className="jills-warn" role="note">{card.warning}</p>}
     {!editing && shown.length > 0 && <ul className="jills-inputs" aria-label="Inputs">
       {shown.map(([k, v]) => <li key={k}><code>{k}</code> {v}</li>)}
     </ul>}
@@ -125,6 +126,7 @@ export const CSS = `
 .jills-meta { color: var(--dsw-alias-label-tertiary, #888); font-size: 11px; }
 .jills-name { font-size: 14px; font-weight: 600; }
 .jills-desc { margin: 0; color: var(--dsw-alias-label-secondary, #999); }
+.jills-warn { margin: 0; color: var(--dsw-alias-state-warn-primary, #d90); font-size: 12px; }
 .jills-inputs { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
 .jills-inputs li { padding: 2px 8px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2, #8882); }
 .jills-inputs code { color: var(--dsw-alias-label-secondary, #999); margin-right: 4px; }

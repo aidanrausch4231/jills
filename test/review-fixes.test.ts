@@ -209,6 +209,6 @@ test("a runner killed with SIGKILL: refresh sweeps the recorded step process gro
   const r = status(id, { home })!;
   assert.equal(r.state, "failed");
   assert.equal(r.steps.long!.state, "failed");
-  assert.match(r.steps.long!.reason!, /process group killed/);
+  assert.match(r.steps.long!.reason!, /process group stopped/);
   await until(() => !pidAlive(childPid), 10_000, "orphaned step to be killed");
 });

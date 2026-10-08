@@ -36,6 +36,13 @@ export interface JillDef {
   inputs: InputDef[];
   steps: StepDef[];
   worktree: boolean;
+  /**
+   * Isolation box this Jill opts into (`box: docker | openshell | <name>`);
+   * `docker: true` is an alias of `box: docker`. Needs a matching isolation
+   * plug-in in config `plugins:`; core ships none.
+   */
+  box?: string;
+  /** True when box is "docker" (kept for the docker: true alias). */
   docker: boolean;
   machine: string;
   timeout?: string | number;
@@ -45,7 +52,7 @@ export interface JillDef {
   extra: Record<string, unknown>;
 }
 
-const JILL_KEYS = new Set(["name", "description", "when", "keywords", "inputs", "steps", "worktree", "docker", "machine", "timeout"]);
+const JILL_KEYS = new Set(["name", "description", "when", "keywords", "inputs", "steps", "worktree", "box", "docker", "machine", "timeout"]);
 const STEP_KEYS = new Set(["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs"]);
 export const MAX_COPIES = 16;
 
@@ -142,6 +149,15 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
       errs.push((e as Error).message);
     }
   }
+  let box: string | undefined;
+  if (data.box !== undefined && data.box !== null && data.box !== false) {
+    if (typeof data.box !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(data.box)) errs.push(`box must be a plug-in name such as docker or openshell`);
+    else box = data.box;
+  }
+  if (data.docker === true) {
+    if (box && box !== "docker") errs.push(`docker: true conflicts with box: ${box} (docker: true means box: docker)`);
+    box = "docker";
+  }
   if (errs.length) throw new Error(`${path}: ${errs.join("; ")}`);
   const extra: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) if (!JILL_KEYS.has(k)) extra[k] = v;
@@ -153,7 +169,8 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
     inputs,
     steps,
     worktree: data.worktree === undefined ? true : data.worktree === true,
-    docker: data.docker === true,
+    box,
+    docker: box === "docker",
     machine: data.machine === undefined ? "local" : String(data.machine),
     timeout: data.timeout as string | number | undefined,
     body: body.trim(),
@@ -187,11 +204,26 @@ function findCycle(steps: StepDef[]): string[] | undefined {
   return undefined;
 }
 
-/** v1 refusals for settings whose plug-ins are not built yet. Returns a message or undefined. */
-export function v1Refusal(j: JillDef): string | undefined {
-  if (j.docker) return `Jill "${j.name}" sets docker: true — docker isolation is not supported in v1. Set docker: false (or remove it) to run on this machine in a worktree.`;
+/** Shown wherever a Jill with worktree: false is suggested or checked. */
+export const NO_WORKTREE_NOTE = "no worktree: edits your checkout directly";
+
+/**
+ * Refusals for settings whose plug-ins are not installed. `box:` (and its
+ * alias docker: true) needs an isolation plug-in of that name loaded from
+ * config `plugins:`; pass the loaded isolation names. Returns a message or undefined.
+ */
+export function v1Refusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()): string | undefined {
+  const r = boxRefusal(j, isolation);
+  if (r) return r;
   if (j.machine !== "local") return `Jill "${j.name}" sets machine: ${j.machine} — only machine: local is supported in v1 (ssh places come later).`;
   return undefined;
+}
+
+/** box: <name> without an installed isolation plug-in of that name → message naming the missing extension. */
+export function boxRefusal(j: JillDef, isolation: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()): string | undefined {
+  if (!j.box || isolation.has(j.box)) return undefined;
+  const how = j.box === "docker" ? "box: docker (or docker: true)" : `box: ${j.box}`;
+  return `Jill "${j.name}" sets ${how}, but the "${j.box}" isolation extension is not installed. Add the ${j.box} isolation plug-in file to config plugins: (Jills core ships only worktree isolation), or remove box: to run in a worktree on this machine.`;
 }
 
 export interface JillScan {
@@ -251,8 +283,8 @@ export function checkNesting(root: JillDef, lookup: (name: string) => JillDef | 
         throw new Error(`Jill recursion refused: ${[...stack, s.jill].join(" -> ")} (a Jill may not call itself, directly or indirectly)`);
       const child = lookup(s.jill);
       if (!child) throw new Error(`step ${j.name}.${s.name}: unknown Jill "${s.jill}"`);
-      if (child.docker && !root.docker)
-        throw new Error(`nested Jill "${child.name}" requires docker but outer Jill "${root.name}" runs without it`);
+      if (child.box && !root.box)
+        throw new Error(`nested Jill "${child.name}" requires box: ${child.box} but outer Jill "${root.name}" runs without it`);
       walk(child, [...stack, child.name]);
     }
   };

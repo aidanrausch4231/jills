@@ -11,7 +11,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
-import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +23,9 @@ const repoRoot = resolve(addon, '../..')
 const runtime = resolve(process.env.DSH_RUNTIME ?? join(repoRoot, '../switchboard/dsh-runtime'))
 const output = resolve(process.argv[2] ?? join(repoRoot, '.work/shots'))
 await mkdir(output, { recursive: true })
+// Start clean: a stale jills-dsh-failure.png (or an old card shot) from an earlier run must never
+// be mistaken for this run's result.
+for (const f of readdirSync(output)) if (/^jills-dsh-.*\.png$/.test(f)) rmSync(join(output, f), { force: true })
 const temp = realpathSync(await mkdtemp(join(tmpdir(), 'jills-dsh-smoke-')))
 const dshHome = join(temp, 'dsh-home')
 const jillsHome = join(temp, 'jills-home')
@@ -183,6 +186,7 @@ try {
   assert.ok(logged.length > 0, `the agent notice for run ${runId} is in the dsh session log`)
   assert.ok(!logs.includes('smoke-fake-key'), 'the Jev key never appears in dsh logs')
   assert.deepEqual(errors, [])
+  assert.ok(!readdirSync(output).includes('jills-dsh-failure.png'), 'no failure screenshot from this run')
   console.log(`PASS dsh smoke: card shown, Jev got the last turns, Edit + Start ran Jill hello -> ${line}; agent told (${logged.map(f => f.slice(temp.length)).join(', ')})`)
   console.log(`screenshots: ${output}/jills-dsh-card.png, jills-dsh-status.png (temp: ${temp})`)
 } catch (error) {

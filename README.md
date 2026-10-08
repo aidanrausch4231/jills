@@ -7,6 +7,9 @@ logs. Nothing merges itself.
 
 Light like Pi: a tiny core and single-file plug-ins behind small versioned interfaces.
 
+**v1 = Pi + DeepSeek Harness (dsh).** The Claude Code add-on (`addons/claude-code/`) is v2: its code
+and tests stay in the repo and run in `pnpm test`, but it is not part of the v1 install.
+
 ## Install
 
 Needs Node 22+, pnpm and git 2.38+ (for `git merge-tree --write-tree`).
@@ -26,15 +29,14 @@ Set `JILLS_HOME` to use another home folder (tests always use a temp one).
 
 - **MCP (any harness)**: register `jills mcp` as a stdio MCP server. Tools: `list_jills`,
   `suggest_jill`, `start_jill`, `jill_status`, `wait_for_jill`.
-  - Claude Code: `claude mcp add jills -- node /abs/path/personal/jills/dist/src/cli.js mcp`
   - Pi: run `pi mcp add jills -- node /abs/path/personal/jills/dist/src/cli.js mcp`, or add this
     to the global `~/.pi/agent/mcp.json` (a project `.pi/mcp.json` applies only in trusted projects):
     `{"mcpServers": {"jills": {"command": "node", "args": ["/abs/path/personal/jills/dist/src/cli.js", "mcp"]}}}`
   - dsh: add the same command as an MCP server in the dsh config.
-- **Chat suggestions** come from the add-ons in `addons/`, all built: the Claude Code hook and
-  `/jills` command (`addons/claude-code/`), the Pi extension (`addons/pi/`) and the dsh card
-  (`addons/dsh/`). Each folder's README has its install steps; `addons/README.md` lists the
-  library API they call.
+- **Chat suggestions** come from the v1 add-ons in `addons/`: the Pi extension (`addons/pi/`) and
+  the dsh card (`addons/dsh/`). Each folder's README has its install steps; `addons/README.md` lists
+  the library API they call. `addons/claude-code/` (hook + `/jills` command) is v2: built and tested,
+  but not installed in v1.
 
 ## Config: `~/.jills/config.yml`
 
@@ -46,9 +48,9 @@ jev:
   model: typesafe/jev-router    # OpenRouter model
   key_env: OPENROUTER_API_KEY   # key is read ONLY from this env var, never logged
   threshold: 0.7                # suggest only when confidence >= threshold
-agent_cli: pi                   # pi | claude
+agent_cli: pi                   # pi (v1); claude is v2
 # agent_bin: /path/to/pi        # optional binary override
-# claude_permission_mode: acceptEdits
+# claude_permission_mode: acceptEdits   # v2 (Claude Code)
 tiers: { spinsoft: openrouter/some-cheap-model }
 default_model: openai-codex/gpt-5.6-sol
 # plugins: [~/.jills/plugins/my-runner.js]
@@ -68,8 +70,10 @@ keywords: [bug, broken]                              # fallback matcher
 inputs:
   - name: task
     required: true
-worktree: true        # default true: run on branch jills/<name>-<run> in $JILLS_HOME/worktrees/
-docker: false         # v1 refuses docker: true
+worktree: true        # strongly recommended (default): run on branch jills/<name>-<run> in $JILLS_HOME/worktrees/
+                      # worktree: false = no worktree: edits your checkout directly (jills check warns)
+# box: docker         # optional isolation extension (docker | openshell | <name>); refused unless a
+                      # matching isolation plug-in is listed in config plugins:. docker: true = box: docker
 machine: local        # v1 refuses anything else
 timeout: 90m          # whole run; over → stuck
 steps:
@@ -97,22 +101,29 @@ Agent files are markdown with front matter `name`, `description`, `tools`, `mode
 body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier] ?? default_model`.
 
 - pi: `pi -p --model M --append-system-prompt <instructions file> --tools read,grep -- "<task>"`
-- claude: `claude -p --model M --append-system-prompt "<instructions>" --tools Read,Grep [--permission-mode P] -- "<task>"`
+- claude (v2): `claude -p --model M --append-system-prompt "<instructions>" --tools Read,Grep [--permission-mode P] -- "<task>"`
 
 ### How a run works
 
 - Steps whose `needs` are done start in parallel; `copies: N` starts N instances.
 - `jill:` steps run inline in the same run and worktree. No self or indirect recursion; depth ≤ 4.
-- Per-step and total timeouts kill the whole process group; the run becomes `stuck`. Every run has a
-  total limit: the Jill's `timeout`, else config `default_timeout` (default 2h). The record keeps the
-  deadline, so `jills wait` reports `stuck` (and kills the runner and its steps) even when a runner
-  hangs past it, instead of waiting forever.
+- Per-step and total timeouts stop the whole process group (SIGTERM, then SIGKILL after a grace);
+  the run becomes `stuck`. Every run has a total limit: the Jill's `timeout`, else config
+  `default_timeout`, else 2h. A value of 0 or less falls through to the next one; values above
+  2^31-1 ms (about 24.8 days) are clamped, and the record keeps the limit actually used.
+- The runner writes a heartbeat (wall time + its own monotonic elapsed time) every 5 s and records
+  its own and each step's process start time. `jills wait` / status mark a run `stuck` when the
+  runner says it is past its limit, or when the wall-clock deadline has passed and the heartbeat
+  stays unchanged for 30 s on the watcher's own clock, so a laptop suspend or clock jump alone never
+  makes a live run stuck. The runner and steps then get SIGTERM, then SIGKILL after a grace, and only
+  after their start time matches the record, so a recycled pid is never signaled.
 - Git stays outside agents: Jills commits after each `writes: true` step.
 - Writers that can run at the same time get child worktrees branched from the run branch, merged
   back with `git merge-tree --write-tree` + `commit-tree` + compare-and-swap `update-ref`. A conflict
   sets the run to `needs-you`, lists the files and leaves the run branch untouched.
 - Jills never merges into your branch. Worktrees are kept until you delete them.
-- `worktree: false` runs in the repo folder itself and never commits.
+- `worktree: false` runs in the repo folder itself and never commits (no worktree: edits your checkout
+  directly; `jills check` warns and suggestions say so).
 - Run states: `queued`, `running`, `done`, `failed`, `stuck`, `needs-you`.
 - Records: `$JILLS_HOME/runs/<id>.json` (atomic writes) and per-step logs in `$JILLS_HOME/runs/<id>/`.
 - No background service: `jills start` spawns a detached runner process and exits.
@@ -159,12 +170,15 @@ Slots (interface version 1, `src/plugins/types.ts`): `matcher`, `runner`, `isola
 Built-ins: matcher `jev` then `keywords`; runner `command` and `agent`; isolation `worktree`;
 check `exit-code`. A plug-in is one ESM file whose default export is
 `{ slot, apiVersion: 1, name, ...methods }`; list it under `plugins:` in config.yml. Core refuses an
-unknown `apiVersion`. Later stages add `docker` isolation and `ssh` places in the same slots.
+unknown `apiVersion`. Docker and OpenShell boxes are optional isolation plug-ins (none ship with
+core): a Jill opts in with `box: docker` (or `box: openshell`), and `jills check` / start refuse it,
+naming the missing extension, until a matching isolation plug-in is listed under `plugins:`. `ssh`
+places come later in the same way.
 
 ## Develop
 
 ```bash
-pnpm build && pnpm test      # core + add-on tests (claude-code, pi, dsh unit); no network; temp JILLS_HOME
+pnpm build && pnpm test      # core + add-on tests (pi, dsh unit, and the v2 claude-code add-on); no network; temp JILLS_HOME
 pnpm test:core               # core only
 pnpm e2e                     # jills start hello in a temp repo → wait → branch with commits
 pnpm smoke:dsh               # isolated real dsh + browser (not part of pnpm test)

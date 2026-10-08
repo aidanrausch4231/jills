@@ -39,7 +39,7 @@ export {
   type GoOpts,
 } from "./api.js";
 export { loadConfig, jillsHome, type JillsConfig } from "./config.js";
-export { parseJill, scanJills, checkNesting, v1Refusal, MAX_DEPTH, type JillDef, type StepDef } from "./jillfile.js";
+export { parseJill, scanJills, checkNesting, v1Refusal, boxRefusal, NO_WORKTREE_NOTE, MAX_DEPTH, type JillDef, type StepDef } from "./jillfile.js";
 export { scanAgents, findAgent, parseAgentFile, resolveModel, type AgentDef } from "./agents.js";
 export { resultLine, TERMINAL, type RunRecord, type RunState, type StepRecord, type RunEvent } from "./runs.js";
 export { loadSession, type SessionState } from "./session.js";

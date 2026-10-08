@@ -85,6 +85,8 @@ export interface JillsCard {
   confidence: number
   /** Matcher that answered (jev or keywords). */
   matcher: string
+  /** Warning shown on the card, e.g. "no worktree: edits your checkout directly"; empty when none. */
+  warning: string
   /** Short note for closed and error cards. */
   note: string
   /** Live run status once started. */

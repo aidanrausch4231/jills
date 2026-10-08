@@ -5,9 +5,12 @@ or the `jills` CLI / MCP server; none of them holds Jills logic of its own.
 
 | Folder         | Harness             | Status |
 |----------------|---------------------|--------|
-| `claude-code/` | Claude Code         | built: UserPromptSubmit hook + `/jills` slash command |
-| `pi/`          | Pi 1.0.4            | built: one extension file (`jills.ts`) |
-| `dsh/`         | DeepSeek Harness    | built: dsh plugin with suggestion card + status line |
+| `pi/`          | Pi 1.0.4            | v1: one extension file (`jills.ts`) |
+| `dsh/`         | DeepSeek Harness    | v1: dsh plugin with suggestion card + status line |
+| `claude-code/` | Claude Code         | **v2, not part of the v1 install**: UserPromptSubmit hook + `/jills` slash command (code and tests kept) |
+
+v1 targets Pi and DeepSeek Harness only. The Claude Code add-on stays in the repo and its tests
+still run, but v1 install steps do not set it up.
 
 Root `pnpm test` runs every add-on's tests after the core tests (it builds the dsh add-on first and
 type-checks the Pi extension). The dsh browser smoke runs separately: `pnpm smoke:dsh`.

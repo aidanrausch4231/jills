@@ -9,6 +9,7 @@ import { loadConfig } from "../src/config.js";
 import { parseJevReply, setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
 import { loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
 import { loadSession } from "../src/session.js";
+import { procStartToken } from "../src/proc.js";
 import { sleep } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -145,14 +146,15 @@ test("jills wait reports stuck when a hung runner passes its deadline (no hang f
     started: past,
     repo: tmp(),
     pid: runner.pid,
+    pidStart: procStartToken(runner.pid),
     logDir: join(home, "runs", "hung-1"),
-    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running", pid: step.pid } },
+    steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running", pid: step.pid, pidStart: procStartToken(step.pid) } },
     events: [],
     timeLimit: "1m",
     deadline: new Date(Date.now() - 2 * 60_000).toISOString(),
   };
   saveRecord(home, rec);
-  const w = await wait("hung-1", { home, timeoutMs: 10_000, pollMs: 50 });
+  const w = await wait("hung-1", { home, timeoutMs: 10_000, pollMs: 50, staleMs: 200, killGraceMs: 500 });
   assert.equal(w.timedOut, false, "wait must not hang");
   assert.equal(w.record.state, "stuck");
   assert.match(w.line, /stuck/);

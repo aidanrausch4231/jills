@@ -154,6 +154,24 @@ describe("pi add-on: suggestions", () => {
     assert.equal(t.called("start").length, 0, "manual mode never starts on its own");
   });
 
+  it("worktree: false suggestion shows 'no worktree: edits your checkout directly' (widget, notice, auto message)", async () => {
+    const warning = "no worktree: edits your checkout directly";
+    const manual = setup({
+      suggest: async () => ({ action: "suggest", reason: "fits", jill: "hello", auto: false, text: 'Jev: this looks like a job for Jill "hello"', agentContext: "ask", worktree: false, warning }),
+    });
+    await manual.emit("input", { text: "say hello", source: "interactive" }, manual.ctx);
+    await manual.emit("before_agent_start", { prompt: "say hello" }, manual.ctx);
+    assert.match(manual.calls.widget.at(-1)![0], /no worktree: edits your checkout directly/);
+    assert.match(manual.calls.notify.at(-1)![0], /no worktree: edits your checkout directly/);
+    const auto = setup({
+      suggest: async () => ({ action: "suggest", reason: "fits", jill: "hello", auto: true, text: "x", agentContext: "x", worktree: false, warning }),
+    });
+    await auto.emit("input", { text: "say hello", source: "interactive" }, auto.ctx);
+    const res = await auto.emit("before_agent_start", { prompt: "say hello" }, auto.ctx);
+    assert.match(res.message.content, /no worktree: edits your checkout directly/);
+    assert.doesNotMatch(res.message.content, /separate worktree/);
+  });
+
   it("quiet result: shows nothing and adds no context", async () => {
     const t = setup({ suggest: async () => ({ action: "quiet", reason: "just talk", auto: false }) });
     await t.emit("input", { text: "hi there", source: "interactive" }, t.ctx);

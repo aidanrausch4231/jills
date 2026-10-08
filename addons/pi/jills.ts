@@ -190,15 +190,19 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
     if (s.auto) {
       try {
         const rec = await startRun(ctx, s.jill, s.inputs ?? {});
-        notify(`Jills: started ${s.jill} (run ${rec.id}); I will post the result here.`);
-        return `[Jills] Auto mode: Jills already started Jill "${s.jill}" as run ${rec.id}. It runs on its own in a separate worktree; Pi will post the one-line result (branch + logs) in this chat when it finishes. Tell the user you started it; do not start it again and do not merge anything.`;
+        notify(`Jills: started ${s.jill} (run ${rec.id})${s.warning ? ` (${s.warning})` : ""}; I will post the result here.`);
+        const where = s.worktree === false ? `It runs on its own with ${s.warning ?? "no worktree: edits your checkout directly"}` : "It runs on its own in a separate worktree";
+        return `[Jills] Auto mode: Jills already started Jill "${s.jill}" as run ${rec.id}. ${where}; Pi will post the one-line result (branch + logs) in this chat when it finishes. Tell the user you started it; do not start it again and do not merge anything.`;
       } catch (e) {
         notify(`Jills: could not start ${s.jill}: ${(e as Error).message}`, "error");
         return undefined;
       }
     }
-    setWidget([s.text ?? `Jev suggests Jill "${s.jill}"`, "/jills go to run it · /jills dismiss · /jills never · /jills quiet"]);
-    notify(s.text ?? `Jev suggests Jill "${s.jill}"`);
+    // worktree: false → always say so next to the suggestion.
+    let shown = s.text ?? `Jev suggests Jill "${s.jill}"`;
+    if (s.warning && !shown.includes(s.warning)) shown += ` (${s.warning})`;
+    setWidget([shown, "/jills go to run it · /jills dismiss · /jills never · /jills quiet"]);
+    notify(shown);
     return s.agentContext;
   }
 

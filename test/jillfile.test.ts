@@ -65,7 +65,7 @@ test("JILL.md validation errors are clear", () => {
 
 test("docker: true and machine != local are refused clearly", async () => {
   const d = parseJill("---\nname: d\ndocker: true\nsteps:\n  a: {run: x}\n---\n");
-  assert.match(v1Refusal(d)!, /docker isolation is not supported in v1/);
+  assert.match(v1Refusal(d)!, /"docker" isolation extension is not installed/);
   const m = parseJill("---\nname: m\nmachine: gpu-box\nsteps:\n  a: {run: x}\n---\n");
   assert.match(v1Refusal(m)!, /only machine: local is supported in v1/);
   assert.equal(v1Refusal(parseJill("---\nname: l\nsteps:\n  a: {run: x}\n---\n")), undefined);
@@ -74,11 +74,11 @@ test("docker: true and machine != local are refused clearly", async () => {
   const repo = tmpRepo();
   writeJill(home, "boxed", "docker: true\nsteps:\n  a: {run: echo hi}");
   writeJill(home, "remote", "machine: build-01\nsteps:\n  a: {run: echo hi}");
-  await assert.rejects(start("boxed", { home, cwd: repo }), /docker isolation is not supported in v1/);
+  await assert.rejects(start("boxed", { home, cwd: repo }), /"docker" isolation extension is not installed/);
   await assert.rejects(start("remote", { home, cwd: repo }), /only machine: local/);
-  await assert.rejects(dryRun("boxed", { home, cwd: repo }), /not supported in v1/);
+  await assert.rejects(dryRun("boxed", { home, cwd: repo }), /isolation extension is not installed/);
   const rep = await check({ home });
-  assert.ok(rep.warnings.some((w) => /docker/.test(w)));
+  assert.ok(rep.errors.some((e) => /boxed.*"docker" isolation extension is not installed/.test(e)));
 });
 
 test("required inputs are enforced", async () => {

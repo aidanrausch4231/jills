@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { StepRunResult } from "./plugins/types.js";
 
@@ -101,4 +101,60 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
       finish({ exitCode: code, timedOut, aborted, signal: sig ?? undefined, pid });
     });
   });
+}
+
+/**
+ * A token that names one process instance: its start time. Linux reads
+ * /proc/<pid>/stat (start time in clock ticks since boot); elsewhere `ps -o lstart=`.
+ * A recycled pid gets a different token. undefined = no such process / unknown.
+ */
+export function procStartToken(pid: number | undefined): string | undefined {
+  if (!pid || pid <= 0) return undefined;
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // Field 2 (comm) may hold spaces and parens; the rest follows the last ")".
+      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      const start = rest[19]; // field 22: starttime
+      return start ? `linux:${start}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out ? `ps:${out}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True only when pid is alive AND is the same process instance as token. */
+export function sameProcess(pid: number | undefined, token: string | undefined): boolean {
+  if (!pid || !token) return false;
+  return procStartToken(pid) === token;
+}
+
+/**
+ * May we signal the process group led by pid (recorded with token)? Yes when
+ * the leader is still the recorded process, or when the leader is gone (a pid
+ * still used as a group id is never handed out again, so the group can only
+ * be ours). No when the pid now names another process, or when no token was
+ * recorded and the leader is alive (identity cannot be checked).
+ */
+export function groupIsOurs(pid: number | undefined, token: string | undefined): boolean {
+  if (!pid || pid <= 1) return false;
+  const now = procStartToken(pid);
+  if (now === undefined) return true;
+  return token !== undefined && now === token;
+}
+
+/** Does any process in group pid still exist? */
+export function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 }

@@ -6,7 +6,7 @@ import { scanAgents } from "./agents.js";
 import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { RunEngine, parallelWriters, type EventListener } from "./engine.js";
 import { repoRoot } from "./git.js";
-import { checkNesting, scanJills, v1Refusal, type JillDef, type JillScan } from "./jillfile.js";
+import { boxRefusal, checkNesting, NO_WORKTREE_NOTE, scanJills, v1Refusal, type JillDef, type JillScan } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
 import type { JillSummary, MatchResult, Turn } from "./plugins/types.js";
 import {
@@ -19,6 +19,7 @@ import {
   TERMINAL,
   waitForRun,
   type RunRecord,
+  type WaitOpts,
 } from "./runs.js";
 import { isMuted, loadSession, muteRepo, saveSession, SUGGEST_EVERY, unmuteRepo, updateSession, type SessionState } from "./session.js";
 import { renderShellTemplate, renderTemplate } from "./template.js";
@@ -81,6 +82,10 @@ export interface Suggestion {
   text?: string;
   /** Text for the main agent's context. */
   agentContext?: string;
+  /** Whether the suggested Jill runs in its own worktree. */
+  worktree?: boolean;
+  /** Short warning to show with the suggestion (e.g. "no worktree: edits your checkout directly"). */
+  warning?: string;
 }
 
 async function resolveRepo(repo: string | undefined, cwd: string | undefined): Promise<string | undefined> {
@@ -164,12 +169,14 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   saveSession(home, s);
   const inputs = m.inputs ?? {};
   const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
-  const text = `Jev: this looks like a job for Jill "${j.name}"${inputText}: ${j.description}`;
+  const warning = j.worktree ? undefined : NO_WORKTREE_NOTE;
+  const warnText = warning ? ` (${warning})` : "";
+  const text = `Jev: this looks like a job for Jill "${j.name}"${inputText}: ${j.description}${warnText}`;
   const inputArgs = Object.entries(inputs).map(([k, v]) => ` --input ${k}=${JSON.stringify(v)}`).join("");
   const agentContext = auto
-    ? `[Jills] Jev matched Jill "${j.name}"${inputText} (confidence ${m.confidence}). Auto mode is on: start it with the start_jill MCP tool (or \`jills start ${j.name}${inputArgs} --session ${o.session}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself.`
-    : `[Jills] Jev suggests Jill "${j.name}"${inputText} (confidence ${m.confidence}). Manual mode: do NOT start it yourself. Ask the user whether to run it; they can type /jills go to start it, /jills dismiss to quiet this chat, or /jills never to mute it for this repo.`;
-  return { action: "suggest", reason: "new task fits a saved Jill", jill: j.name, description: j.description, inputs, ...base, auto, text, agentContext };
+    ? `[Jills] Jev matched Jill "${j.name}"${inputText} (confidence ${m.confidence})${warnText}. Auto mode is on: start it with the start_jill MCP tool (or \`jills start ${j.name}${inputArgs} --session ${o.session}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself.`
+    : `[Jills] Jev suggests Jill "${j.name}"${inputText} (confidence ${m.confidence})${warnText}. Manual mode: do NOT start it yourself. Ask the user whether to run it; they can type /jills go to start it, /jills dismiss to quiet this chat, or /jills never to mute it for this repo.`;
+  return { action: "suggest", reason: "new task fits a saved Jill", jill: j.name, description: j.description, inputs, ...base, auto, text, agentContext, worktree: j.worktree, ...(warning ? { warning } : {}) };
 }
 
 // ---------------------------------------------------------------- start / run
@@ -197,7 +204,7 @@ async function prepareRun(jillName: string, o: StartOpts): Promise<{ c: Ctx; rec
   const c = await context(o);
   const j = c.lookup(jillName);
   if (!j) throw new Error(`no Jill named "${jillName}" (jill_paths: ${c.config.jill_paths.join(", ")})`);
-  const refusal = v1Refusal(j);
+  const refusal = v1Refusal(j, c.plugins.isolation);
   if (refusal) throw new Error(refusal);
   checkNesting(j, c.lookup);
   const inputs = resolveInputs(j, o.inputs ?? {});
@@ -280,7 +287,7 @@ export interface WaitResult {
 }
 
 /** Block until a run is done/failed/stuck/needs-you; returns a one-line result. */
-export async function wait(id: string, o: BaseOpts & { timeoutMs?: number; pollMs?: number; onUpdate?: (r: RunRecord) => void } = {}): Promise<WaitResult> {
+export async function wait(id: string, o: BaseOpts & WaitOpts = {}): Promise<WaitResult> {
   const home = loadConfig(o.home ?? jillsHome()).home;
   const { record, timedOut } = await waitForRun(home, id, o);
   return { record, timedOut, line: timedOut ? `jills run ${id} still ${record.state} (wait timed out)` : resultLine(record) };
@@ -406,8 +413,13 @@ export async function check(o: BaseOpts = {}): Promise<CheckReport> {
   for (const p of c.config.agent_paths) if (!existsSync(p)) warnings.push(`agent path ${p} does not exist`);
   for (const p of c.config.jill_paths) if (!existsSync(p)) warnings.push(`jill path ${p} does not exist`);
   for (const j of c.scan.jills.values()) {
-    const refusal = v1Refusal(j);
-    if (refusal) warnings.push(refusal);
+    // box: without its isolation extension → refused (error); other v1 limits warn.
+    const boxed = boxRefusal(j, c.plugins.isolation);
+    if (boxed) errors.push(`${j.path}: ${boxed}`);
+    const refusal = v1Refusal(j, c.plugins.isolation);
+    if (refusal && refusal !== boxed) warnings.push(refusal);
+    if (!j.worktree)
+      warnings.push(`Jill "${j.name}" sets worktree: false (${NO_WORKTREE_NOTE}; Jills never commits). Worktrees are strongly recommended: remove the line or set worktree: true.`);
     try {
       checkNesting(j, c.lookup);
     } catch (e) {
@@ -424,14 +436,14 @@ export async function dryRun(jillName: string, o: StartOpts = {}): Promise<strin
   const c = await context(o);
   const j = c.lookup(jillName);
   if (!j) throw new Error(`no Jill named "${jillName}"`);
-  const refusal = v1Refusal(j);
+  const refusal = v1Refusal(j, c.plugins.isolation);
   if (refusal) throw new Error(refusal);
   checkNesting(j, c.lookup);
   const inputs = resolveInputs(j, o.inputs ?? {});
   const repo = resolve(inputs.repo ?? o.cwd ?? process.cwd());
   const lines: string[] = [];
   lines.push(`Jill ${j.name}: ${j.description}`);
-  lines.push(j.worktree ? `workspace: new worktree on branch jills/${j.name}-<run-id> from ${repo} (under ${join(c.config.home, "worktrees")})` : `workspace: ${repo} (worktree: false, no commits)`);
+  lines.push(j.worktree ? `workspace: new worktree on branch jills/${j.name}-<run-id> from ${repo} (under ${join(c.config.home, "worktrees")})` : `workspace: ${repo} (${NO_WORKTREE_NOTE}; no commits)`);
   lines.push(`inputs: ${JSON.stringify(inputs)}`);
   const walk = (jill: JillDef, indent: string, isolated: boolean) => {
     const par = isolated ? parallelWriters(jill, c.lookup) : new Set<string>();
@@ -487,7 +499,7 @@ inputs:
   - name: task
     description: What to do
     required: true
-worktree: true
+worktree: true  # strongly recommended: agents work in their own git worktree; false edits your checkout directly
 timeout: 30m
 steps:
   first:

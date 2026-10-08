@@ -31,7 +31,7 @@ test("unknown nested Jill and inner docker are refused", () => {
   assert.throws(() => checkNesting(a, () => undefined), /unknown Jill "ghost"/);
   const inner = parseJill("---\nname: inner\ndocker: true\nsteps:\n  s: {run: x}\n---\n");
   const outer = j("outer", ["inner"]);
-  assert.throws(() => checkNesting(outer, (n) => (n === "inner" ? inner : undefined)), /requires docker/);
+  assert.throws(() => checkNesting(outer, (n) => (n === "inner" ? inner : undefined)), /requires box: docker/);
 });
 
 test("start refuses recursive Jills before creating anything", async () => {

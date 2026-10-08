@@ -24,7 +24,7 @@ globalThis.window = { __ModuleLoader__: { load({ id, factory }) { assert.equal(i
 new Function(source)()
 delete globalThis.window
 
-const card = (over = {}) => ({ kind: 'suggest', messageId: 'm1', reason: '', jill: 'hello', description: 'Write a hello file', inputs: { who: 'Aidan' }, fields: ['who'], auto: false, confidence: 0.93, matcher: 'jev', note: '', run: null, ...over })
+const card = (over = {}) => ({ kind: 'suggest', messageId: 'm1', reason: '', jill: 'hello', description: 'Write a hello file', inputs: { who: 'Aidan' }, fields: ['who'], auto: false, confidence: 0.93, matcher: 'jev', warning: '', note: '', run: null, ...over })
 const view = (c, extra = {}) => renderToStaticMarkup(React.createElement(mod.CardView, {
   card: c, busy: false, editing: false, values: c.inputs, onEdit() {}, onValue() {}, handlers: { onStart() {}, onDismiss() {}, onNever() {} }, ...extra,
 }))
@@ -52,6 +52,12 @@ test('the Definition matches typed user messages only', () => {
   assert.deepEqual(node.location, { kind: 'session' }, 'outside the Turn process fold')
   assert.equal(def.buildViewNode({ key: 'k', id: 'x' }), null)
   assert.equal(mod.textOf('plain'), 'plain')
+})
+
+test('a worktree: false card shows "no worktree: edits your checkout directly"', () => {
+  const html = view(card({ warning: 'no worktree: edits your checkout directly' }))
+  assert.match(html, /class="jills-warn"[^>]*>no worktree: edits your checkout directly</)
+  assert.doesNotMatch(view(card()), /jills-warn/)
 })
 
 test('a suggestion card shows the Jill, its inputs and four actions', () => {

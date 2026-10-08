@@ -36,6 +36,10 @@ export interface CoreSuggestion {
   matcher?: string | undefined
   /** Global auto switch. */
   auto: boolean
+  /** Whether the Jill runs in its own worktree. */
+  worktree?: boolean | undefined
+  /** Short warning to show on the card (e.g. worktree: false). */
+  warning?: string | undefined
 }
 
 /** One chat turn Jev reads for context. */
@@ -88,6 +92,9 @@ export interface BridgeOptions {
 }
 
 /** Card note when the chat has no working folder. Jills never falls back to the dsh Host's own folder. */
+/** Shown on a card whose Jill sets worktree: false. */
+export const NO_WORKTREE = 'no worktree: edits your checkout directly'
+
 export const NO_WORKSPACE = 'open a workspace folder first: this chat has no working folder, and Jills never runs in the dsh Host\'s own folder'
 
 /** Number of turns before the new message that Jev reads. */
@@ -166,7 +173,7 @@ export function runLine(core: Pick<JillsCore, 'resultLine'>, r: CoreRunRecord): 
 }
 
 function emptyCard(messageId: string, kind: JillsCard['kind'], reason: string, note = ''): JillsCard {
-  return { kind, messageId, reason, jill: '', description: '', inputs: {}, fields: [], auto: false, confidence: 0, matcher: '', note, run: null }
+  return { kind, messageId, reason, jill: '', description: '', inputs: {}, fields: [], auto: false, confidence: 0, matcher: '', warning: '', note, run: null }
 }
 
 function message(error: unknown): string {
@@ -223,17 +230,21 @@ export class JillsBridge {
     const { messageId } = request
     if (!request.text.trim()) return emptyCard(messageId, 'quiet', 'empty message')
     if (request.sentAt && this.now() - request.sentAt > this.maxAgeMs) return emptyCard(messageId, 'quiet', 'old message (history)')
+    // No workspace folder: stay quiet before asking core, so the dsh Host's own
+    // process.cwd() never reaches core.suggest (repo lookup, mutes, auto start).
+    const cwd = (request.cwd ?? '').trim()
+    if (!cwd) return emptyCard(messageId, 'quiet', 'no workspace folder', NO_WORKSPACE)
     try {
       const core = await this.core()
       const recent = await this.recent(request.sessionId, messageId)
-      const s = await core.suggest({ session: jillsSession(request.sessionId), message: request.text, recent, ...(request.cwd ? { cwd: request.cwd } : {}), ...this.opts() })
+      const s = await core.suggest({ session: jillsSession(request.sessionId), message: request.text, recent, cwd, ...this.opts() })
       if (s.action !== 'suggest' || !s.jill) return { ...emptyCard(messageId, 'quiet', s.reason), matcher: s.matcher ?? '', confidence: s.confidence ?? 0 }
       const fields = (await core.listJills(this.opts())).find(j => j.name === s.jill)?.inputs ?? []
       const card: JillsCard = {
         kind: 'suggest', messageId, reason: s.reason, jill: s.jill, description: s.description ?? '', inputs: s.inputs ?? {}, fields,
-        auto: s.auto, confidence: s.confidence ?? 0, matcher: s.matcher ?? '', note: '', run: null,
+        auto: s.auto, confidence: s.confidence ?? 0, matcher: s.matcher ?? '', warning: s.warning ?? (s.worktree === false ? NO_WORKTREE : ''), note: '', run: null,
       }
-      return s.auto ? await this.launch(card, { sessionId: request.sessionId, messageId, jill: s.jill, inputs: card.inputs, cwd: request.cwd }) : card
+      return s.auto ? await this.launch(card, { sessionId: request.sessionId, messageId, jill: s.jill, inputs: card.inputs, cwd }) : card
     } catch (error) {
       return emptyCard(messageId, 'quiet', `jills unavailable: ${message(error)}`)
     }

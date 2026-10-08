@@ -1,4 +1,7 @@
-# Jills add-on for Claude Code
+# Jills add-on for Claude Code (v2)
+
+> **v2 — not part of the v1 install.** Jills v1 targets Pi and DeepSeek Harness. This add-on's code
+> and tests stay here (and still run in the root `pnpm test`), but do not install it for v1.
 
 Three pieces, none with Jills logic of its own:
 

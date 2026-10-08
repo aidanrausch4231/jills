@@ -35,7 +35,7 @@ test("CLI exit codes and core commands", () => {
 
   const boxed = jills(home, ["start", "boxed"], { cwd: repo });
   assert.equal(boxed.code, 1);
-  assert.match(boxed.err, /docker isolation is not supported in v1/);
+  assert.match(boxed.err, /"docker" isolation extension is not installed/);
 
   const dry = jills(home, ["try", "hello", "--dry-run", "--input", "who=x"], { cwd: repo });
   assert.equal(dry.code, 0, dry.err);
@@ -67,5 +67,6 @@ test("CLI exit codes and core commands", () => {
   assert.equal(n.code, 0);
   assert.ok(existsSync(join(home, "jills", "my-flow", "JILL.md")));
   const chk = jills(home, ["check"]);
-  assert.match(chk.out, /warning: .*docker/);
+  assert.match(chk.out, /error: .*"docker" isolation extension is not installed/);
+  assert.equal(chk.code, 1);
 });
