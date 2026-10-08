@@ -101,6 +101,8 @@ interface Pending {
 
 /** Build the extension. The default export uses the real core. */
 export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}): void {
+  // A worker inside a Jills run: no widget, no context, no /jills command.
+  if (process.env.JILLS_RUN_ID) return;
   let corePromise: Promise<JillsCore> | undefined;
   const getCore = (): Promise<JillsCore> => {
     if (!corePromise) {
@@ -220,7 +222,8 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
 
   pi.on("input", (event, ctx) => {
     uiCtx = ctx;
-    if (event.source === "extension") return { action: "continue" };
+    // No UI (print mode, e.g. headless subagents): stay silent.
+    if (!ctx.hasUI || event.source === "extension") return { action: "continue" };
     const text = event.text.trim();
     if (!text || text.startsWith("/") || text.startsWith("!")) return { action: "continue" };
     const done = check(ctx, text).catch((e: unknown) => {
@@ -231,10 +234,10 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
     return { action: "continue" };
   });
 
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (_event, ctx) => {
     const p = pending;
     pending = undefined;
-    if (!p) return;
+    if (!p || !ctx.hasUI) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<undefined>((r) => {
       timer = setTimeout(() => r(undefined), contextWaitMs);

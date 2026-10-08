@@ -169,6 +169,28 @@ describe("pi add-on: suggestions", () => {
     assert.doesNotMatch(res.message.content, /separate worktree/);
   });
 
+  it("a session without UI (print mode, headless subagent) gets no suggestion and no context", async () => {
+    const t = setup();
+    t.ctx.hasUI = false;
+    await t.emit("input", { text: "please say hello to pi", source: "interactive" }, t.ctx);
+    assert.equal(await t.emit("before_agent_start", { prompt: "please say hello to pi" }, t.ctx), undefined);
+    assert.equal(t.called("suggest").length, 0);
+    assert.equal(t.calls.widget.length, 0);
+    assert.equal(t.calls.notify.length, 0);
+  });
+
+  it("inside a Jills run (JILLS_RUN_ID set) registers nothing", () => {
+    process.env.JILLS_RUN_ID = "r-test";
+    try {
+      const f = fakePi();
+      createJillsExtension(f.pi, { core: fakeCore().core });
+      assert.equal(f.handlers.size, 0);
+      assert.equal(f.commands.size, 0);
+    } finally {
+      delete process.env.JILLS_RUN_ID;
+    }
+  });
+
   it("quiet result: shows nothing and adds no context", async () => {
     const t = setup({ suggest: async () => ({ action: "quiet", reason: "just talk", auto: false }) });
     await t.emit("input", { text: "hi there", source: "interactive" }, t.ctx);

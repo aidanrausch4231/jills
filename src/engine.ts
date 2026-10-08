@@ -6,7 +6,7 @@ import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { bootId } from "./proc.js";
 import { heartbeatPath, loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
-import { renderShellTemplate, renderTemplate } from "./template.js";
+import { renderShellTemplate, renderTemplate, type TemplateVars } from "./template.js";
 import { MAX_TIMER_MS, parseLimit, writeJsonAtomic } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
@@ -60,6 +60,13 @@ export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string,
 const readOutput = (path?: string) => (path && existsSync(path) ? readFileSync(path, "utf8").slice(-OUTPUT_LIMIT).trim() : "");
 
 const now = () => new Date().toISOString();
+
+/** A nested Jill's inputs: the step's `inputs:` rendered with the parent's vars (else the parent's inputs), then the child's defaults. */
+export function nestedInputs(step: StepDef, child: JillDef, vars: TemplateVars): Record<string, string> {
+  const out = step.inputs ? Object.fromEntries(Object.entries(step.inputs).map(([k, v]) => [k, renderTemplate(v, vars)])) : { ...vars.inputs };
+  for (const i of child.inputs) if (out[i.name] === undefined && i.default !== undefined) out[i.name] = i.default;
+  return out;
+}
 
 export interface EngineOpts {
   config: JillsConfig;
@@ -232,9 +239,7 @@ export class RunEngine {
         const child = this.o.lookup(step.jill);
         if (!child) return fail("failed", `unknown Jill "${step.jill}"`);
         if (stack.includes(child.name)) return fail("failed", `recursion refused: ${[...stack, child.name].join(" -> ")}`);
-        const vars = { inputs, copy, run_id: this.record.id, steps: outputs };
-        const childInputs = step.inputs ? Object.fromEntries(Object.entries(step.inputs).map(([k, v]) => [k, renderTemplate(v, vars)])) : { ...inputs };
-        for (const i of child.inputs) if (childInputs[i.name] === undefined && i.default !== undefined) childInputs[i.name] = i.default;
+        const childInputs = nestedInputs(step, child, { inputs, copy, run_id: this.record.id, steps: outputs });
         const out = await this.runGraph({ jill: child, ws: iws, inputs: childInputs, depth: f.depth + 1, stack: [...stack, child.name], prefix: `${key}/` });
         if (out !== "done") return fail(out, `nested Jill ${child.name} ended ${out}`);
         const inner = Object.entries(this.record.steps).filter(([k]) => k.startsWith(`${key}/`));

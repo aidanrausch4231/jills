@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:f
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
-import { parallelWriters, RunEngine, stepCommand, type EventListener } from "./engine.js";
+import { nestedInputs, parallelWriters, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
@@ -70,6 +70,7 @@ export function declaredInputs(j: Pick<JillDef, "inputs"> | undefined, given: Re
  * asks the matchers; core keeps only inputs the named Jill declares.
  */
 export async function suggest(o: SuggestOpts): Promise<Suggestion> {
+  if (process.env.JILLS_RUN_ID) return { action: "quiet", reason: "inside a Jills run", auto: false }; // workers: no Jev call, no state write
   const c = await context(o);
   const declared = (m: MatchResult | undefined) => (m?.jill ? { ...m, inputs: declaredInputs(c.lookup(m.jill), m.inputs) } : m);
   const match: SuggestCtx["match"] = async (input) => {
@@ -285,9 +286,9 @@ function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, j
   for (const s of jill.steps) {
     const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : ""].filter(Boolean);
     const head = `${indent}- ${s.name}${s.jill ? `: jill ${s.jill}` : ""}${meta.length ? ` (${meta.join("; ")})` : ""}`;
-    if (s.jill) {
+    if (s.jill) { // nested Jill: the same inputs the engine gives it
       yield { line: head };
-      yield* describeSteps(c, root, inputs, c.lookup(s.jill)!, indent + "  ");
+      yield* describeSteps(c, root, nestedInputs(s, c.lookup(s.jill)!, { inputs, run_id: "<run-id>", steps: {} }), c.lookup(s.jill)!, indent + "  ");
       continue;
     }
     try {
