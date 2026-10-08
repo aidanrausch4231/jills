@@ -88,6 +88,13 @@ async function resolveRepo(repo: string | undefined, cwd: string | undefined): P
   return repoRoot(cwd ?? process.cwd());
 }
 
+/** Keep only the inputs a Jill declares (drops `repo` and other undeclared keys). */
+export function declaredInputs(j: Pick<JillDef, "inputs"> | undefined, given: Record<string, string> | undefined): Record<string, string> {
+  if (!j || !given) return {};
+  const names = new Set(j.inputs.map((i) => i.name));
+  return Object.fromEntries(Object.entries(given).filter(([k]) => names.has(k)));
+}
+
 function runIsActive(home: string, id: string): boolean {
   const r = refreshRecord(home, id);
   return !!r && !TERMINAL.has(r.state);
@@ -137,6 +144,8 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
     if (m) break;
   }
   if (!m) return quiet("no matcher answered");
+  // Whatever a matcher plug-in returns, keep only inputs the named Jill declares.
+  if (m.jill) m = { ...m, inputs: declaredInputs(c.lookup(m.jill), m.inputs) };
   const base = { label: m.label, matcher: m.matcher, confidence: m.confidence };
   if (m.label !== "new" || !m.jill) return quiet(m.label === "same" ? "same task as before" : "just talk", base);
   if (s.waitingForNew) {
@@ -330,6 +339,40 @@ export async function on(session: string, o: BaseOpts & { repo?: string; cwd?: s
 /** The Jill last suggested in a chat (for /jills go). */
 export function lastSuggestion(session: string, o: BaseOpts = {}): string | undefined {
   return loadSession(loadConfig(o.home ?? jillsHome()).home, session).lastSuggestion?.jill;
+}
+
+/** The last suggestion in a chat with the inputs Jev proposed (saved in the session state). */
+export function lastSuggested(session: string, o: BaseOpts = {}): { jill: string; inputs: Record<string, string> } | undefined {
+  const last = loadSession(loadConfig(o.home ?? jillsHome()).home, session).lastSuggestion;
+  return last ? { jill: last.jill, inputs: { ...(last.inputs ?? {}) } } : undefined;
+}
+
+export interface GoOpts extends BaseOpts {
+  session: string;
+  /** Jill to start; defaults to the one last suggested in this chat. */
+  jill?: string;
+  /** Inputs given by hand; they override the saved suggestion's inputs. */
+  inputs?: Record<string, string>;
+  cwd?: string;
+}
+
+/**
+ * `/jills go`: start the Jill last suggested in this chat (or `jill`). Uses the
+ * inputs Jev proposed for it (saved in the session state), overridden by any
+ * given by hand. Only inputs the Jill declares are kept; `dropped` names the rest.
+ */
+export async function go(o: GoOpts): Promise<{ record: RunRecord; inputs: Record<string, string>; dropped: string[] }> {
+  const last = lastSuggested(o.session, o);
+  const jillName = o.jill ?? last?.jill;
+  if (!jillName) throw new Error("nothing was suggested in this chat; use jills start <jill>");
+  const c = await context(o);
+  const j = c.lookup(jillName);
+  if (!j) throw new Error(`no Jill named "${jillName}" (jill_paths: ${c.config.jill_paths.join(", ")})`);
+  const merged = { ...(last?.jill === j.name ? last.inputs : {}), ...(o.inputs ?? {}) };
+  const inputs = declaredInputs(j, merged);
+  const dropped = Object.keys(merged).filter((k) => !(k in inputs));
+  const record = await start(j.name, { home: o.home, inputs, cwd: o.cwd, session: o.session });
+  return { record, inputs, dropped };
 }
 
 export function setAuto(onOff: boolean, o: BaseOpts = {}): void {

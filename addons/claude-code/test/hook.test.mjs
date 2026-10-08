@@ -1,13 +1,15 @@
 // Tests for the Claude Code hook. Run after `pnpm build`: node --test 'addons/claude-code/test/*.test.mjs'
 // Temp JILLS_HOME, no network (no OpenRouter key -> keywords fallback).
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { hookOutput, recentTurns } from "../hook.mjs";
+import { giveUpMs, hookOutput, HOOK_MARGIN_MS, recentTurns } from "../hook.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "..", "hook.mjs");
@@ -148,4 +150,44 @@ test("recentTurns reads the last text turns from a transcript", () => {
 test("hookOutput stays silent for quiet suggestions", () => {
   assert.equal(hookOutput({ action: "quiet", reason: "x", auto: false }, "s"), undefined);
   assert.equal(hookOutput(undefined, "s"), undefined);
+});
+
+test("giveUpMs always exceeds the Jev request timeout", () => {
+  assert.equal(giveUpMs(8000, undefined), 8000 + HOOK_MARGIN_MS);
+  assert.equal(giveUpMs(30000, "8000"), 30000 + HOOK_MARGIN_MS, "a low env value cannot undercut Jev");
+  assert.equal(giveUpMs(8000, "60000"), 60000, "env can raise it");
+  assert.equal(giveUpMs(undefined, ""), 8000 + HOOK_MARGIN_MS);
+  for (const jev of [1000, 8000, 30000]) assert.ok(giveUpMs(jev, "1") > jev);
+});
+
+test("a slow Jev reply inside jev.timeout_ms still reaches the user (hook does not give up first)", async () => {
+  // Jev answers after 1.5 s; jev.timeout_ms is 5 s. A hook that gave up at
+  // JILLS_HOOK_TIMEOUT_MS=500 would print nothing.
+  const jev = createServer((req, res) => {
+    req.resume();
+    req.on("end", () =>
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ label: "new", jill: "fix-bug", confidence: 0.9 }) } }] }));
+      }, 1500),
+    );
+  });
+  jev.listen(0, "127.0.0.1");
+  await once(jev, "listening");
+  try {
+    const url = `http://127.0.0.1:${jev.address().port}/v1/chat/completions`;
+    const { home, repo } = setup(`jev: {url: ${JSON.stringify(url)}, key_env: JILLS_CC_SLOW_KEY, timeout_ms: 5000}\n`);
+    const env = { ...process.env, JILLS_HOME: home, JILLS_CC_SLOW_KEY: "fake", JILLS_HOOK_TIMEOUT_MS: "500" };
+    delete env.OPENROUTER_API_KEY;
+    const child = spawn(process.execPath, [HOOK], { env, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    child.stdin.end(JSON.stringify(hookInput(repo, "the weather is lovely today", "cc-slow")));
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0);
+    const o = JSON.parse(out.trim());
+    assert.match(o.systemMessage, /Jill "fix-bug"/, "Jev's (not keywords') answer arrived");
+  } finally {
+    jev.close();
+  }
 });

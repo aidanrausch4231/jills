@@ -18,8 +18,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/src/cli.js",
-    "test": "node --test --test-concurrency=4 --test-timeout=60000 'dist/test/**/*.test.js'",
-    "e2e": "bash scripts/e2e-hello.sh"
+    "test": "pnpm run test:core && pnpm run test:addons",
+    "test:core": "node --test --test-concurrency=4 --test-timeout=60000 'dist/test/**/*.test.js'",
+    "test:addons": "pnpm --dir addons/dsh run build && pnpm --dir addons/pi run typecheck && node --test --test-concurrency=3 --test-timeout=90000 'addons/claude-code/test/*.test.mjs' addons/pi/test/jills-pi.test.ts 'addons/dsh/test/*.test.mjs'",
+    "e2e": "bash scripts/e2e-hello.sh",
+    "smoke:dsh": "pnpm --dir addons/dsh run build && pnpm --dir addons/dsh run smoke"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

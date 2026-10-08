@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 /** The part of the Jills library this add-on uses (tests pass a fake). */
 export type JillsCore = Pick<
   typeof JillsLib,
-  "suggest" | "start" | "status" | "listJills" | "dismiss" | "never" | "quiet" | "on" | "lastSuggestion" | "setAuto" | "resultLine" | "TERMINAL"
+  "suggest" | "start" | "go" | "status" | "listJills" | "dismiss" | "never" | "quiet" | "on" | "lastSuggestion" | "setAuto" | "resultLine" | "TERMINAL"
 >;
 
 export interface JillsPiOptions {
@@ -115,8 +115,6 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
   const pollMs = opts.pollMs ?? 2000;
 
   let pending: Pending | undefined;
-  /** Inputs Jev proposed for the last suggestion, for `/jills go`. */
-  let lastInputs: { jill: string; inputs: Record<string, string> } | undefined;
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   let alive = true;
   let uiCtx: ExtensionContext | undefined;
@@ -133,8 +131,19 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
   const setStatus = (text: string | undefined) => safe(() => ui()?.setStatus(STATUS, text));
   const setWidget = (lines: string[] | undefined) => safe(() => ui()?.setWidget(WIDGET, lines));
 
+  /**
+   * Add a Jills message to the chat without steering or interrupting the agent.
+   * Pi 1.0.4 `sendMessage` with `triggerTurn: false`: while the agent streams, the
+   * message is held and appended when the current turn ends (never `agent.steer`);
+   * when idle it is appended at once. It never starts a turn; the agent reads it
+   * on its next turn.
+   */
+  function addToChat(text: string, display: boolean, details: Record<string, unknown>): void {
+    safe(() => pi.sendMessage({ customType: MSG_TYPE, content: text, display, details }, { triggerTurn: false }));
+  }
+
   function post(text: string, details: Record<string, unknown>): void {
-    safe(() => pi.sendMessage({ customType: MSG_TYPE, content: text, display: true, details }));
+    addToChat(text, true, details);
   }
 
   function watch(core: JillsCore, rec: RunRecord): void {
@@ -178,7 +187,6 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
     const core = await getCore();
     const s: Suggestion = await core.suggest({ session: sessionKey(ctx), message, recent: recentTurns(ctx), cwd: ctx.cwd, home });
     if (s.action !== "suggest" || !s.jill) return undefined;
-    lastInputs = { jill: s.jill, inputs: s.inputs ?? {} };
     if (s.auto) {
       try {
         const rec = await startRun(ctx, s.jill, s.inputs ?? {});
@@ -253,15 +261,19 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
               notify("Jills: nothing suggested in this chat yet; use /jills go <jill> [key=value ...]", "warning");
               return;
             }
-            const base = lastInputs?.jill === jill ? lastInputs.inputs : {};
-            const rec = await startRun(ctx, jill, { ...base, ...inputs });
+            // Core go: the inputs Jev proposed (saved with the suggestion in the
+            // session state, so they survive a reload) overridden by key=value words.
+            const g = await core.go({ session, jill, inputs, cwd: ctx.cwd, home });
+            const rec = g.record;
+            setWidget(undefined);
+            watch(core, rec);
+            if (g.dropped.length) notify(`Jills: ignored input(s) ${jill} does not declare: ${g.dropped.join(", ")}`, "warning");
             notify(`Jills: started ${jill} (run ${rec.id}); I will post the result here.`);
-            pi.sendMessage({
-              customType: MSG_TYPE,
-              content: `[Jills] The user started Jill "${jill}" as run ${rec.id}. It runs on its own; the result will be posted in this chat. Do not start it again.`,
-              display: false,
-              details: { runId: rec.id, jill },
-            });
+            addToChat(
+              `[Jills] The user started Jill "${jill}" as run ${rec.id}. It runs on its own; the result will be posted in this chat. Do not start it again.`,
+              false,
+              { runId: rec.id, jill },
+            );
             return;
           }
           case "dismiss":

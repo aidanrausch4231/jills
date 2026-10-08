@@ -44,7 +44,7 @@ checkout at `../../../switchboard/dsh-upstream` (the dev links point there, like
 cd addons/dsh
 pnpm install
 pnpm build          # lib/index.js, lib/client.js, lib/typert.*
-pnpm test           # bridge (real core, temp JILLS_HOME, mocked Jev), client bundle, contracts
+pnpm test           # bridge (real core, temp JILLS_HOME, mocked Jev), client bundle, contracts (root pnpm test runs these too)
 pnpm smoke          # isolated real dsh + browser; writes ../../.work/shots/jills-dsh-*.png
 ```
 
@@ -73,8 +73,24 @@ Configuration (all optional):
 
 Set plugin config with a profile patch, for example `- id: jills` / `config: { home: /path }`.
 
+## Chat context and the main agent
+
+- **Jev reads the last 3 turns.** For each card the Host reads the Session log with dsh's Session
+  Controller (`sessionController.inspect`, which never activates the Agent) and sends Jev the last 3
+  typed-user / assistant text turns before the message (`turnsBefore` in `src/bridge.ts`).
+- **The main agent is told when a Jill starts** (Start button or auto mode). dsh's plugin API has no
+  hook that adds text to the current turn's prompt, so the closest supported mechanism is used:
+  `sessionController.resolveAgent(session)` then `agent.inject(message)`, dsh's "queue model-facing
+  context for the next step without waking the agent". The message is a user-role `jills` notice
+  (`[Jills] Jill "x" started as run <id> ... the Jills card ... reports the result ... Do not start it
+  again`); the Session is then flushed so it is durable. It never starts, steers or interrupts a
+  turn: a running agent reads it at its next step, an idle one with the user's next message. If the
+  Agent cannot be reached the run still starts and the card says "The agent was not told: ...".
+- **No workspace folder, no run.** A chat without a working folder gets the card note "open a
+  workspace folder first" for Start (and auto mode) and Never; Jills never falls back to the dsh
+  Host's own folder.
+
 ## Limits (v1)
 
-- The card sends only the new message to Jev, not the last 3 turns.
-- The main dsh agent is not told about the suggestion; the user acts on the card.
+- The result is reported back by the card's status line, not by the agent.
 - Cards are cached in Host memory; after a Host restart only messages newer than `maxAgeMs` are asked again.

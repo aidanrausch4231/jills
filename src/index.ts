@@ -6,7 +6,8 @@
  *   wait(runId, { timeoutMs?, pollMs?, onUpdate?, home? })      -> { record, timedOut, line }
  *   status(runId?, { home? })                                   -> RunRecord | RunRecord[]
  *   listJills({ home? })                                        -> JillSummary[]
- *   dismiss / never / quiet / on / lastSuggestion / setAuto     -> anti-nag + switch controls
+ *   go({ session, jill?, inputs?, cwd? })                       -> start the last suggestion with its saved inputs
+ *   dismiss / never / quiet / on / lastSuggestion / lastSuggested / setAuto -> anti-nag + switch controls
  */
 export {
   context,
@@ -22,6 +23,9 @@ export {
   quiet,
   on,
   lastSuggestion,
+  lastSuggested,
+  go,
+  declaredInputs,
   setAuto,
   check,
   dryRun,
@@ -32,6 +36,7 @@ export {
   type StartOpts,
   type WaitResult,
   type CheckReport,
+  type GoOpts,
 } from "./api.js";
 export { loadConfig, jillsHome, type JillsConfig } from "./config.js";
 export { parseJill, scanJills, checkNesting, v1Refusal, MAX_DEPTH, type JillDef, type StepDef } from "./jillfile.js";

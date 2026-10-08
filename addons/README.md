@@ -5,9 +5,12 @@ or the `jills` CLI / MCP server; none of them holds Jills logic of its own.
 
 | Folder         | Harness             | Status |
 |----------------|---------------------|--------|
-| `claude-code/` | Claude Code         | next stage: UserPromptSubmit hook + `/jills` slash command |
-| `pi/`          | Pi 1.0.4            | next stage: one extension file |
-| `dsh/`         | DeepSeek Harness    | next stage: dsh plugin with suggestion card + status line |
+| `claude-code/` | Claude Code         | built: UserPromptSubmit hook + `/jills` slash command |
+| `pi/`          | Pi 1.0.4            | built: one extension file (`jills.ts`) |
+| `dsh/`         | DeepSeek Harness    | built: dsh plugin with suggestion card + status line |
+
+Root `pnpm test` runs every add-on's tests after the core tests (it builds the dsh add-on first and
+type-checks the Pi extension). The dsh browser smoke runs separately: `pnpm smoke:dsh`.
 
 Library API the add-ons use (see `src/index.ts`):
 
@@ -18,7 +21,9 @@ wait(runId, { timeoutMs?, pollMs?, onUpdate?, home? }): Promise<{ record, timedO
 status(runId?, { home? }): RunRecord | RunRecord[] | undefined
 listJills({ home? }): Promise<JillSummary[]>
 dismiss(session) / quiet(session) / on(session, { unmute? }) / never({ session?, jill?, repo? })
-lastSuggestion(session): string | undefined                             // for "/jills go"
+lastSuggestion(session): string | undefined                             // the Jill last suggested
+lastSuggested(session): { jill, inputs } | undefined                    // ... with the inputs Jev proposed
+go({ session, jill?, inputs?, cwd? }): Promise<{ record, inputs, dropped }>  // "/jills go": saved inputs + overrides
 setAuto(on: boolean)
 ```
 

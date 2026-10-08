@@ -2,13 +2,13 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { JillsBridge, jillsSession, loadCore, runLine } from '../lib/types/bridge.js'
+import { JillsBridge, jillsSession, loadCore, NO_WORKSPACE, runLine, startedNotice, turnsBefore } from '../lib/types/bridge.js'
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const lib = join(repoRoot, 'dist/src/index.js')
@@ -33,7 +33,7 @@ after(() => { jev.close() })
 
 let n = 0
 /** A fresh Jills home + git repo; `jev` points the matcher at the mock server. */
-function fixture({ auto = false, jev: useJev = false } = {}) {
+function fixture({ auto = false, jev: useJev = false, agent = undefined } = {}) {
   const dir = join(root, `case-${++n}`)
   const home = join(dir, 'home'), repo = join(dir, 'repo')
   mkdirSync(home, { recursive: true }); mkdirSync(repo, { recursive: true })
@@ -41,7 +41,7 @@ function fixture({ auto = false, jev: useJev = false } = {}) {
   writeFileSync(join(home, 'config.yml'), `auto: ${auto}\njill_paths: [${JSON.stringify(join(repoRoot, 'examples'))}]\nagent_paths: []\n${jevLine}\n`)
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo })
-  const bridge = new JillsBridge(loadCore(lib), { home })
+  const bridge = new JillsBridge(loadCore(lib), { home, ...(agent ? { agent } : {}) })
   return { home, repo, bridge }
 }
 const msg = (over = {}) => ({ sessionId: 'sess-1', messageId: 'm1', text: 'please say hello to the team', cwd: '', sentAt: Date.now(), ...over })
@@ -188,4 +188,104 @@ test('runLine text for each terminal state', () => {
   assert.equal(runLine(core, { ...base, state: 'failed' }).terminal, true)
   assert.equal(runLine(core, { ...base, state: 'queued' }).terminal, false)
   assert.equal(jillsSession('a/b c'), 'dsh-a_b_c')
+})
+
+// ---------------------------------------------------------------- fix round 2
+
+/** A fake dsh session runtime: fixed turns, records what the agent is told. */
+function fakeAgent({ turns = [], tellError } = {}) {
+  const told = []
+  const asked = []
+  return {
+    told, asked,
+    async recentTurns(sessionId, messageId) { asked.push([sessionId, messageId]); return turns },
+    async tell(sessionId, text, summary) { if (tellError) throw new Error(tellError); told.push({ sessionId, text, summary }) },
+  }
+}
+
+const noRuns = home => !existsSync(join(home, 'runs')) || readdirSync(join(home, 'runs')).length === 0
+
+test('empty or missing cwd never falls back to the Host folder: Start refuses with a clear note', async () => {
+  const agent = fakeAgent()
+  const { home, bridge } = fixture({ agent })
+  await bridge.suggest(msg({ cwd: '' }))
+  for (const cwd of ['', '   ', undefined]) {
+    const card = await bridge.start({ sessionId: 'sess-1', messageId: 'm1', jill: 'hello', inputs: {}, cwd })
+    assert.equal(card.kind, 'error')
+    assert.equal(card.note, NO_WORKSPACE)
+    assert.match(card.note, /open a workspace folder first/)
+  }
+  assert.ok(noRuns(home), 'no run was started (in the Host folder or anywhere)')
+  assert.equal(agent.told.length, 0)
+  const never = await bridge.never({ sessionId: 'sess-1', messageId: 'm1', cwd: '' })
+  assert.equal(never.kind, 'error')
+  assert.equal(never.note, NO_WORKSPACE)
+  assert.ok(!existsSync(join(home, 'muted.json')), 'no mute for the Host folder repo')
+})
+
+test('auto mode with no cwd refuses instead of running in the Host folder', async () => {
+  const { home, bridge } = fixture({ auto: true })
+  const card = await bridge.suggest(msg({ cwd: '' }))
+  assert.equal(card.kind, 'error')
+  assert.equal(card.note, NO_WORKSPACE)
+  assert.ok(noRuns(home))
+})
+
+test('Jev gets the last 3 turns before the message, not just the new message', async () => {
+  process.env.JILLS_TEST_JEV_KEY = 'test-key'
+  try {
+    jevRequests.length = 0
+    jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+    const turns = [
+      { role: 'user', text: 'u1' }, { role: 'assistant', text: 'a1' }, { role: 'user', text: 'u2' }, { role: 'assistant', text: 'a2' },
+    ]
+    const agent = fakeAgent({ turns })
+    const { bridge } = fixture({ jev: true, agent })
+    await bridge.suggest(msg({ text: 'greet Aidan for me' }))
+    assert.deepEqual(agent.asked, [['sess-1', 'm1']])
+    const user = jevRequests[0].body.messages[1].content
+    assert.match(user, /Last turns: \[\{"role":"assistant","text":"a1"\},\{"role":"user","text":"u2"\},\{"role":"assistant","text":"a2"\}\]/)
+    assert.match(user, /New message: "greet Aidan for me"/)
+  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+})
+
+test('turnsBefore reads typed user and assistant turns before the message from dsh events', () => {
+  const user = (id, text, kind = 'user') => ({ type: 'user/message', data: { id, role: 'user', content: [{ type: 'text', text }], source: { kind } } })
+  const assistant = text => ({ type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'reasoning', text: 'hmm' }, { type: 'text', text }] } } })
+  const events = [
+    { type: 'session/start', data: {} },
+    user('u0', 'zero'), assistant('r0'),
+    user('u1', 'one'), user('x', 'injected context', 'schedule'), { type: 'tool/call', data: { name: 'read' } }, assistant(''), assistant('r1'),
+    user('m1', 'the new message'), assistant('after'),
+  ]
+  assert.deepEqual(turnsBefore(events, 'm1'), [{ role: 'assistant', text: 'r0' }, { role: 'user', text: 'one' }, { role: 'assistant', text: 'r1' }])
+  assert.deepEqual(turnsBefore(events, 'm1', 5).map(t => t.text), ['zero', 'r0', 'one', 'r1'])
+  assert.deepEqual(turnsBefore([], 'm1'), [])
+})
+
+test('Start tells the main agent the run id and that the result will be reported back', async () => {
+  const agent = fakeAgent()
+  const { repo, bridge } = fixture({ agent })
+  await bridge.suggest(msg({ cwd: repo }))
+  const card = await bridge.start({ sessionId: 'sess-1', messageId: 'm1', jill: 'hello', inputs: { who: 'x' }, cwd: repo })
+  assert.equal(card.kind, 'started')
+  assert.equal(card.note, 'The agent was told.')
+  assert.equal(agent.told.length, 1)
+  const { sessionId, text, summary } = agent.told[0]
+  assert.equal(sessionId, 'sess-1')
+  assert.ok(text.includes(`run ${card.run.runId}`), text)
+  assert.match(text, /reports the result/)
+  assert.match(text, /Do not start it again/)
+  assert.equal(text, startedNotice({ id: card.run.runId, jill: 'hello' }))
+  assert.match(summary, /Jill hello started/)
+  await untilTerminal(bridge, card.run.runId)
+})
+
+test('a failing agent notice never breaks the started card', async () => {
+  const { repo, bridge } = fixture({ agent: fakeAgent({ tellError: 'agent busy' }) })
+  await bridge.suggest(msg({ cwd: repo }))
+  const card = await bridge.start({ sessionId: 'sess-1', messageId: 'm1', jill: 'hello', inputs: {}, cwd: repo })
+  assert.equal(card.kind, 'started')
+  assert.match(card.note, /not told: agent busy/)
+  await untilTerminal(bridge, card.run.runId)
 })

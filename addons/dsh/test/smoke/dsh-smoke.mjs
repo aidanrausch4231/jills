@@ -11,10 +11,11 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { zstdDecompressSync } from 'node:zlib'
 import { chromium } from 'playwright'
 
 const addon = fileURLToPath(new URL('../../', import.meta.url))
@@ -28,6 +29,7 @@ const jillsHome = join(temp, 'jills-home')
 const repo = join(temp, 'repo')
 const title = `Jills smoke ${temp.slice(-6)}`
 const message = 'Please say hello to Aidan from the team.'
+const earlier = 'What does this repo do?'
 
 // A small git repo the hello Jill can branch from.
 await mkdir(repo, { recursive: true })
@@ -35,14 +37,15 @@ const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8'
 git('init', '-q', '-b', 'main')
 git('-c', 'user.email=smoke@jills.local', '-c', 'user.name=jills smoke', 'commit', '-q', '--allow-empty', '-m', 'init')
 
-// Mocked Jev: records each request and names the hello Jill.
+// Mocked Jev: records each request; names the hello Jill for the hello message, "talk" otherwise.
 const jevRequests = []
 const jev = createServer((req, res) => {
   let body = ''
   req.on('data', chunk => { body += chunk })
   req.on('end', () => {
     jevRequests.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) })
-    const content = JSON.stringify({ label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.93 })
+    const hello = /New message: "Please say hello/.test(JSON.parse(body).messages[1].content)
+    const content = JSON.stringify(hello ? { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.93 } : { label: 'talk', confidence: 0.9 })
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ choices: [{ message: { content } }] }))
   })
@@ -63,8 +66,21 @@ const env = { ...process.env }
 for (const name of Object.keys(env)) if (/KEY|SECRET|TOKEN|PASSWORD/.test(name)) delete env[name]
 Object.assign(env, {
   DSH_HOME: dshHome, JILLS_HOME: jillsHome, JILLS_LIB: join(repoRoot, 'dist/src/index.js'), JILLS_SMOKE_JEV_KEY: 'smoke-fake-key',
-  JILLS_SMOKE_REPO: repo, JILLS_SMOKE_TITLE: title, JILLS_SMOKE_MESSAGE: message,
+  JILLS_SMOKE_REPO: repo, JILLS_SMOKE_TITLE: title, JILLS_SMOKE_MESSAGE: message, JILLS_SMOKE_EARLIER: earlier,
 })
+/** File text; dsh session logs (*.zstd) are a series of zstd frames, decoded one by one. */
+function readText(file) {
+  const buf = readFileSync(file)
+  if (!file.endsWith('.zstd')) return buf.toString('utf8')
+  const magic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+  const starts = []
+  for (let i = buf.indexOf(magic); i >= 0; i = buf.indexOf(magic, i + 1)) starts.push(i)
+  let text = ''
+  for (let k = 0; k < starts.length; k++) {
+    try { text += zstdDecompressSync(buf.subarray(starts[k], starts[k + 1] ?? buf.length)).toString('utf8') } catch { /* magic bytes inside a frame */ }
+  }
+  return text
+}
 function dsh(args) {
   const result = spawnSync('pnpm', ['dsh', ...args], { cwd: runtime, env, encoding: 'utf8', timeout: 180000 })
   assert.equal(result.status, 0, `dsh ${args.join(' ')} failed: ${result.stderr}\n${result.stdout}`)
@@ -106,8 +122,17 @@ try {
   await page.addLocatorHandler(page.getByRole('button', { name: /^(Continue|继续)$/ }), button => button.click())
   await page.addLocatorHandler(page.getByRole('button', { name: 'Configure later', exact: true }), button => button.click())
   await page.goto(url, { waitUntil: 'load' })
-  await page.getByRole('textbox', { name: 'Search session names' }).fill(title, { timeout: 90000 })
-  await page.getByRole('treeitem', { name: new RegExp(title) }).first().click({ timeout: 60000 })
+  // The fixture writes its two-turn chat while the Host starts; reload until the session is listed.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await page.getByRole('textbox', { name: 'Search session names' }).fill(title, { timeout: 90000 })
+      await page.getByRole('treeitem', { name: new RegExp(title) }).first().click({ timeout: 30000 })
+      break
+    } catch (error) {
+      if (attempt >= 4) throw error
+      await page.reload({ waitUntil: 'load' })
+    }
+  }
   const card = page.getByRole('group', { name: 'Jills suggestion: hello' })
   await card.waitFor({ timeout: 60000 })
   for (const name of ['Start', 'Edit', 'Not this', 'Never']) await card.getByRole('button', { name, exact: true }).waitFor()
@@ -127,8 +152,9 @@ try {
   const status = page.getByRole('status', { name: 'Jill hello status' })
   await status.waitFor({ timeout: 30000 })
   await status.and(page.locator('[data-state="done"]')).waitFor({ timeout: 90000 })
-  const line = await status.innerText()
+  const line = (await status.innerText()).split('\n')[0]
   assert.match(line, /Jill hello · done · branch jills\/hello-/)
+  await page.getByText('The agent was told.').waitFor({ timeout: 10000 })
   await page.screenshot({ path: join(output, 'jills-dsh-status.png') })
 
   const branches = git('branch', '--list', 'jills/hello-*').trim()
@@ -137,12 +163,27 @@ try {
   assert.match(git('show', `${branch}:hello.txt`), /hello Aidan and team/)
   assert.equal(git('rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'the user branch is untouched')
 
-  assert.equal(jevRequests.length, 1, 'one Jev call for one user message')
-  assert.equal(jevRequests[0].body.model, 'typesafe/jev-router')
-  assert.match(JSON.stringify(jevRequests[0].body.messages), /say hello to Aidan/)
+  assert.equal(jevRequests.length, 2, 'one Jev call per user message')
+  const helloRequest = jevRequests.find(r => /New message: "Please say hello/.test(r.body.messages[1].content))
+  assert.ok(helloRequest, 'Jev was asked about the hello message')
+  assert.equal(helloRequest.body.model, 'typesafe/jev-router')
+  // Jev reads the turns before the message, from the dsh Session log.
+  const lastTurns = /Last turns: (\[.*\])/.exec(helloRequest.body.messages[1].content)?.[1]
+  assert.deepEqual(JSON.parse(lastTurns), [
+    { role: 'user', text: earlier },
+    { role: 'assistant', text: 'Sure. (scripted reply from the Jills smoke fixture)' },
+  ])
+  // The main agent was told: the started notice is in the persisted Session log.
+  const runId = /jills\/hello-(\S+)/.exec(branch)[1]
+  const notice = `started as run ${runId} in its own worktree`
+  const files = []
+  const walk = dir => { for (const name of readdirSync(dir)) { if (name === 'node_modules') continue; const p = join(dir, name); const st = lstatSync(p); if (st.isDirectory()) walk(p); else if (st.isFile() && st.size < 20_000_000) files.push(p) } }
+  walk(dshHome)
+  const logged = files.filter(f => readText(f).includes(notice))
+  assert.ok(logged.length > 0, `the agent notice for run ${runId} is in the dsh session log`)
   assert.ok(!logs.includes('smoke-fake-key'), 'the Jev key never appears in dsh logs')
   assert.deepEqual(errors, [])
-  console.log(`PASS dsh smoke: card shown, Edit + Start ran Jill hello -> ${line}`)
+  console.log(`PASS dsh smoke: card shown, Jev got the last turns, Edit + Start ran Jill hello -> ${line}; agent told (${logged.map(f => f.slice(temp.length)).join(', ')})`)
   console.log(`screenshots: ${output}/jills-dsh-card.png, jills-dsh-status.png (temp: ${temp})`)
 } catch (error) {
   await page?.screenshot({ path: join(output, 'jills-dsh-failure.png') }).catch(() => {})

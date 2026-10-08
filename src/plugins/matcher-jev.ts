@@ -1,4 +1,4 @@
-import type { MatchInput, MatchResult, MatcherPlugin } from "./types.js";
+import type { JillSummary, MatchInput, MatchResult, MatcherPlugin } from "./types.js";
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
@@ -36,7 +36,14 @@ export function buildJevRequest(input: MatchInput): { model: string; messages: {
   };
 }
 
-export function parseJevReply(content: string, knownJills: string[]): MatchResult | undefined {
+/**
+ * Parse Jev's JSON reply. `jills` maps each known Jill to the inputs it declares
+ * (a plain name list means "known Jills, no declared inputs"). Inputs the named
+ * Jill does not declare are dropped, so a chatty reply cannot set `repo` or
+ * other undeclared keys.
+ */
+export function parseJevReply(content: string, jills: string[] | Pick<JillSummary, "name" | "inputs">[]): MatchResult | undefined {
+  const declared = new Map<string, string[]>(jills.map((j) => (typeof j === "string" ? [j, []] : [j.name, j.inputs])));
   const m = /\{[\s\S]*\}/.exec(content);
   if (!m) return undefined;
   let o: Record<string, unknown>;
@@ -48,11 +55,13 @@ export function parseJevReply(content: string, knownJills: string[]): MatchResul
   const label = o.label;
   if (label !== "talk" && label !== "same" && label !== "new") return undefined;
   const confidence = typeof o.confidence === "number" ? Math.max(0, Math.min(1, o.confidence)) : 0;
-  const jill = typeof o.jill === "string" && knownJills.includes(o.jill) ? o.jill : undefined;
+  const jill = typeof o.jill === "string" && declared.has(o.jill) ? o.jill : undefined;
   if (label === "new" && !jill) return { label: "talk", confidence, matcher: "jev", note: "jev named no known Jill" };
   const inputs: Record<string, string> = {};
-  if (o.inputs && typeof o.inputs === "object")
-    for (const [k, v] of Object.entries(o.inputs as Record<string, unknown>)) if (v !== null && v !== undefined) inputs[k] = String(v);
+  const allowed = new Set(jill ? declared.get(jill) : []);
+  if (o.inputs && typeof o.inputs === "object" && !Array.isArray(o.inputs))
+    for (const [k, v] of Object.entries(o.inputs as Record<string, unknown>))
+      if (allowed.has(k) && v !== null && v !== undefined && typeof v !== "object") inputs[k] = String(v);
   return { label, jill, inputs, confidence, matcher: "jev" };
 }
 
@@ -80,7 +89,7 @@ const jevMatcher: MatcherPlugin = {
       const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
       const content = body.choices?.[0]?.message?.content;
       if (typeof content !== "string") return undefined;
-      return parseJevReply(content, input.jills.map((j) => j.name));
+      return parseJevReply(content, input.jills);
     } catch {
       return undefined;
     }

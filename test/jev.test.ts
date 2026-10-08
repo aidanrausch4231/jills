@@ -109,7 +109,7 @@ test("parseJevReply validates labels and Jill names", () => {
   assert.equal(parseJevReply("nonsense", ["a"]), undefined);
   assert.equal(parseJevReply('{"label":"maybe"}', ["a"]), undefined);
   assert.equal(parseJevReply('```json\n{"label":"new","jill":"zzz","confidence":0.9}\n```', ["a"])!.label, "talk");
-  const ok = parseJevReply('{"label":"new","jill":"a","confidence":3,"inputs":{"x":1}}', ["a"])!;
+  const ok = parseJevReply('{"label":"new","jill":"a","confidence":3,"inputs":{"x":1}}', [{ name: "a", inputs: ["x"] }])!;
   assert.equal(ok.confidence, 1);
   assert.deepEqual(ok.inputs, { x: "1" });
 });

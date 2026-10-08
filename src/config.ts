@@ -27,11 +27,14 @@ export interface JillsConfig {
   default_model?: string;
   /** Extra single-file plug-ins to load (absolute paths or relative to home). */
   plugins: string[];
-  /** Total-run default timeout when a Jill sets none. */
-  default_timeout?: string | number;
+  /** Total-run time limit when a Jill sets none (config `default_timeout`, default 2h). */
+  default_timeout: string | number;
   /** Raw parsed YAML, for plug-ins that read their own keys. */
   raw: Record<string, unknown>;
 }
+
+/** Total-run time limit when neither the Jill nor config.yml sets one. */
+export const DEFAULT_TIMEOUT = "2h";
 
 export const DEFAULT_AGENT_PATHS = ["/home/rausch/harness/v4/agents-src"];
 
@@ -82,7 +85,7 @@ export function loadConfig(home = jillsHome()): JillsConfig {
     tiers,
     default_model: raw.default_model ? String(raw.default_model) : undefined,
     plugins: (strList(raw.plugins) ?? []).map((p) => expand(p, home)),
-    default_timeout: raw.default_timeout as string | number | undefined,
+    default_timeout: typeof raw.default_timeout === "string" || typeof raw.default_timeout === "number" ? raw.default_timeout : DEFAULT_TIMEOUT,
     raw,
   };
 }

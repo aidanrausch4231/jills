@@ -80,6 +80,7 @@ function fakeCore(over: Partial<Record<keyof JillsCore, any>> = {}) {
       agentContext: "[Jills] Manual mode: ask the user.",
     })),
     start: rec("start", async (jill: string) => ({ ...run, jill })),
+    go: rec("go", async (o: any) => ({ record: { ...run, jill: o.jill ?? "hello" }, inputs: { who: "pi", ...o.inputs }, dropped: [] })),
     status: rec("status", (id?: string) => {
       if (!id) return [{ ...run, state: "done" }];
       polls += 1;
@@ -211,15 +212,32 @@ describe("pi add-on: suggestions", () => {
   });
 });
 
+describe("pi add-on: messages never steer the agent", () => {
+  it("the finished-run message and the go notice use triggerTurn: false (no steer, no interrupt, no new turn)", async () => {
+    const t = setup();
+    await t.commands.get("jills").handler("go hello", t.ctx);
+    await until(() => t.sent.length > 1);
+    assert.equal(t.sent.length, 2);
+    for (const { message, options } of t.sent) {
+      assert.deepEqual(options, { triggerTurn: false }, `${message.content}`);
+      assert.notEqual((options as { deliverAs?: string } | undefined)?.deliverAs, "steer");
+    }
+    assert.match(t.sent[1]!.message.content, /run r1 done/);
+    assert.equal(t.sent[1]!.message.display, true);
+  });
+});
+
 describe("pi add-on: /jills commands", () => {
   it("/jills go starts the last suggestion with Jev's inputs plus overrides", async () => {
     const t = setup();
     await t.emit("input", { text: "say hello to pi", source: "interactive" }, t.ctx);
     await t.emit("before_agent_start", { prompt: "x" }, t.ctx);
     await t.commands.get("jills").handler('go who="the team"', t.ctx);
-    const [args] = t.called("start");
-    assert.equal(args[0], "hello");
-    assert.deepEqual(args[1].inputs, { who: "the team" });
+    const [[args]] = t.called("go");
+    assert.equal(args.jill, "hello");
+    assert.equal(args.session, "pi-s1");
+    assert.equal(args.cwd, "/repo");
+    assert.deepEqual(args.inputs, { who: "the team" }, "only overrides; the core adds the saved inputs");
     assert.deepEqual(t.calls.widget.at(-1), undefined, "suggestion widget cleared");
     assert.match(t.sent[0]!.message.content, /The user started Jill "hello" as run r1/);
     await until(() => t.sent.length > 1);
@@ -229,7 +247,7 @@ describe("pi add-on: /jills commands", () => {
   it("/jills go with nothing suggested warns", async () => {
     const t = setup({ lastSuggestion: () => undefined });
     await t.commands.get("jills").handler("go", t.ctx);
-    assert.equal(t.called("start").length, 0);
+    assert.equal(t.called("go").length, 0);
     assert.match(t.calls.notify.at(-1)![0], /nothing suggested/);
   });
 
@@ -261,7 +279,7 @@ describe("pi add-on: /jills commands", () => {
   });
 
   it("errors from the core show as error notices", async () => {
-    const t = setup({ start: async () => { throw new Error('no Jill named "zzz"'); } });
+    const t = setup({ go: async () => { throw new Error('no Jill named "zzz"'); } });
     await t.commands.get("jills").handler("go zzz", t.ctx);
     assert.deepEqual(t.calls.notify.at(-1), ['Jills: no Jill named "zzz"', "error"]);
   });

@@ -35,6 +35,7 @@ export function CardView({ card, busy, editing, values, onEdit, onValue, handler
   if (card.kind === 'quiet') return null
   if (card.kind === 'started' && card.run) return <section className="jills-card jills-card-started" aria-label="Jills run">
     <StatusLine run={card.run} />
+    {card.note && <div className="jills-note jills-run-note">{card.note}</div>}
   </section>
   if (card.kind === 'closed' || card.kind === 'error') return <div className="jills-note" role={card.kind === 'error' ? 'alert' : 'note'} data-kind={card.kind}>
     {card.kind === 'error' ? `Jills: ${card.note}` : card.note}
@@ -131,7 +132,8 @@ export const CSS = `
 .jills-edit label { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary, #999); }
 .jills-edit input { padding: 5px 8px; border: 0.5px solid var(--dsw-alias-border-l3, #8886); border-radius: var(--dsw-radius-sm, 6px); background: var(--dsw-alias-bg-module-platform, transparent); color: var(--dsw-alias-label-primary, inherit); font: inherit; }
 .jills-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.jills-card-started { padding: 8px 12px; }
+.jills-card-started { padding: 8px 12px; gap: 2px; }
+.jills-run-note { margin: 0; font-size: 11px; }
 .jills-status[data-state='done'] { color: var(--dsw-alias-state-success-primary, #3a3); }
 .jills-status[data-state='failed'], .jills-status[data-state='stuck'] { color: var(--dsw-alias-state-error-primary, #d33); }
 .jills-status[data-state='needs-you'] { color: var(--dsw-alias-state-warn-primary, #d90); }

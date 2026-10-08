@@ -31,8 +31,10 @@ Set `JILLS_HOME` to use another home folder (tests always use a temp one).
     to the global `~/.pi/agent/mcp.json` (a project `.pi/mcp.json` applies only in trusted projects):
     `{"mcpServers": {"jills": {"command": "node", "args": ["/abs/path/personal/jills/dist/src/cli.js", "mcp"]}}}`
   - dsh: add the same command as an MCP server in the dsh config.
-- **Chat suggestions** come from the add-ons in `addons/` (Claude Code hook, Pi extension, dsh card).
-  They are built in the next stage; see `addons/README.md` for the library API they call.
+- **Chat suggestions** come from the add-ons in `addons/`, all built: the Claude Code hook and
+  `/jills` command (`addons/claude-code/`), the Pi extension (`addons/pi/`) and the dsh card
+  (`addons/dsh/`). Each folder's README has its install steps; `addons/README.md` lists the
+  library API they call.
 
 ## Config: `~/.jills/config.yml`
 
@@ -50,7 +52,7 @@ agent_cli: pi                   # pi | claude
 tiers: { spinsoft: openrouter/some-cheap-model }
 default_model: openai-codex/gpt-5.6-sol
 # plugins: [~/.jills/plugins/my-runner.js]
-# default_timeout: 60m
+# default_timeout: 2h           # total limit for Jills that set no timeout (default 2h)
 ```
 
 No key or a network error → the keywords matcher answers (`keywords:` in JILL.md).
@@ -101,7 +103,10 @@ body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier
 
 - Steps whose `needs` are done start in parallel; `copies: N` starts N instances.
 - `jill:` steps run inline in the same run and worktree. No self or indirect recursion; depth ≤ 4.
-- Per-step and total timeouts kill the whole process group; the run becomes `stuck`.
+- Per-step and total timeouts kill the whole process group; the run becomes `stuck`. Every run has a
+  total limit: the Jill's `timeout`, else config `default_timeout` (default 2h). The record keeps the
+  deadline, so `jills wait` reports `stuck` (and kills the runner and its steps) even when a runner
+  hangs past it, instead of waiting forever.
 - Git stays outside agents: Jills commits after each `writes: true` step.
 - Writers that can run at the same time get child worktrees branched from the run branch, merged
   back with `git merge-tree --write-tree` + `commit-tree` + compare-and-swap `update-ref`. A conflict
@@ -118,7 +123,7 @@ body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier
 jills list | check
 jills suggest --session <id> [--repo p] [--json] "<message>"   # recent turns as JSON on stdin (optional)
 jills start <jill> [--input k=v]... [--repo p] [--session id] [--json] [--wait]
-jills go --session <id>                     # start the Jill last suggested in this chat
+jills go --session <id> [jill] [--input k=v] # start the last suggestion with the inputs Jev proposed
 jills wait <run> [--timeout 30m]            # one-line result: state, branch, worktree, logs
 jills status [run]
 jills try <jill> --dry-run [--input k=v]    # without --dry-run: run in the foreground
@@ -143,6 +148,10 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - Never → muted for this repo (one Jill, or all) in `$JILLS_HOME/muted.json`.
 - `/jills quiet` → quiet mode for this chat.
 - At most one suggestion per 3 messages.
+- Jev may only fill inputs the Jill declares; any other key (such as `repo`) is dropped, for Jev,
+  keyword and plug-in matches and for `jills go`.
+- The last suggestion's inputs are saved in the session state; `jills go` (and `/jills go`) uses
+  them, with `--input` overriding single values.
 
 ## Plug-ins
 
@@ -155,6 +164,8 @@ unknown `apiVersion`. Later stages add `docker` isolation and `ssh` places in th
 ## Develop
 
 ```bash
-pnpm build && pnpm test      # no network; every test uses a temp JILLS_HOME
+pnpm build && pnpm test      # core + add-on tests (claude-code, pi, dsh unit); no network; temp JILLS_HOME
+pnpm test:core               # core only
 pnpm e2e                     # jills start hello in a temp repo → wait → branch with commits
+pnpm smoke:dsh               # isolated real dsh + browser (not part of pnpm test)
 ```

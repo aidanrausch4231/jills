@@ -16,7 +16,9 @@
 // Env:
 //   JILLS_HOME          Jills home (default ~/.jills), passed through to the core.
 //   JILLS_LIB           path to the core library entry (default ../../dist/src/index.js).
-//   JILLS_HOOK_TIMEOUT_MS  give up on Jev after this long (default 8000).
+//   JILLS_HOOK_TIMEOUT_MS  give up on Jev after this long. Never below the Jev
+//                       request timeout (config jev.timeout_ms) + HOOK_MARGIN_MS,
+//                       so the hook cannot quit before Jev's own request does.
 //   JILLS_HOOK_DEBUG=1  write the quiet reason / errors to stderr.
 
 import { closeSync, openSync, readSync, fstatSync } from "node:fs";
@@ -108,6 +110,22 @@ async function loadLib() {
   return import(pathToFileURL(entry).href);
 }
 
+/** Extra time past the Jev request timeout for config, keywords fallback and session writes. */
+export const HOOK_MARGIN_MS = 3000;
+
+/**
+ * How long the hook waits for the core before it gives up. It always exceeds the
+ * Jev request timeout (config jev.timeout_ms, default 8000) by HOOK_MARGIN_MS, so a
+ * slow Jev still ends in Jev's own timeout and the keywords fallback, not a silent
+ * hook give-up. JILLS_HOOK_TIMEOUT_MS can only raise it.
+ */
+export function giveUpMs(jevTimeoutMs, envValue = process.env.JILLS_HOOK_TIMEOUT_MS) {
+  const jev = Number(jevTimeoutMs) > 0 ? Number(jevTimeoutMs) : 8000;
+  const floor = jev + HOOK_MARGIN_MS;
+  const asked = Number(envValue);
+  return asked > floor ? asked : floor;
+}
+
 function withTimeout(p, ms) {
   let t;
   const timer = new Promise((_, rej) => {
@@ -132,7 +150,13 @@ export async function run(raw) {
   if (prompt.startsWith("/") || prompt.startsWith("!")) return undefined;
   const lib = await loadLib();
   const recent = recentTurns(input.transcript_path);
-  const ms = Number(process.env.JILLS_HOOK_TIMEOUT_MS) || 8000;
+  let jevMs;
+  try {
+    jevMs = lib.loadConfig().jev.timeout_ms;
+  } catch (e) {
+    debug(`config: ${e?.message ?? e}`);
+  }
+  const ms = giveUpMs(jevMs);
   const s = await withTimeout(lib.suggest({ session, message: prompt, recent, cwd }), ms);
   if (s.action !== "suggest") debug(`quiet: ${s.reason}`);
   return hookOutput(s, session, cwd);

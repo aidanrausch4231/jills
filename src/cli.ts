@@ -4,7 +4,7 @@ import {
   dismiss,
   dryRun,
   executeRun,
-  lastSuggestion,
+  go,
   listJills,
   never,
   newJill,
@@ -41,7 +41,9 @@ Usage:
   jills suggest --session <id> [--repo <p>] [--json] "<message>"
                                                ask Jev about one chat message (recent turns: JSON on stdin)
   jills start <jill> [--input k=v]... [--repo <p>] [--session <id>] [--json] [--wait]
-  jills go --session <id> [--input k=v]...     start the Jill last suggested in this chat
+  jills go --session <id> [<jill>] [--input k=v]... [--repo <p>]
+                                               start the Jill last suggested in this chat with the
+                                               inputs Jev proposed (--input overrides; undeclared keys dropped)
   jills wait <run> [--timeout 30m] [--json]    block until the run ends; print a one-line result
   jills status [run] [--json]
   jills try <jill> --dry-run [--input k=v]...  show what would run (without --dry-run: run in foreground)
@@ -193,14 +195,15 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "go":
     case "start": {
-      let jill: string;
+      let r: RunRecord;
       if (cmd === "go") {
+        // Inputs: the ones Jev proposed for the last suggestion (saved in the
+        // session state), overridden by --input flags; undeclared keys dropped.
         const session = need(flag(a, "session"), "--session <id>");
-        const last = rest[0] ?? lastSuggestion(session);
-        if (!last) throw new Error("nothing was suggested in this chat; use jills start <jill>");
-        jill = last;
-      } else jill = need(rest[0], "<jill>");
-      const r = await start(jill, { inputs: inputs(a), cwd: flag(a, "repo"), session: flag(a, "session") });
+        const g = await go({ session, jill: rest[0], inputs: inputs(a), cwd: flag(a, "repo") });
+        if (g.dropped.length) console.error(`jills: ignored input(s) the Jill does not declare: ${g.dropped.join(", ")}`);
+        r = g.record;
+      } else r = await start(need(rest[0], "<jill>"), { inputs: inputs(a), cwd: flag(a, "repo"), session: flag(a, "session") });
       if (has(a, "wait")) {
         const w = await wait(r.id);
         if (json) console.log(JSON.stringify(w.record, null, 2));

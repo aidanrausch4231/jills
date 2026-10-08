@@ -22,6 +22,7 @@ export async function apply(ctx) {
   const cwd = process.env.JILLS_SMOKE_REPO
   const title = process.env.JILLS_SMOKE_TITLE
   const message = process.env.JILLS_SMOKE_MESSAGE
+  const earlier = process.env.JILLS_SMOKE_EARLIER
   if (!cwd || !title || !message) throw new Error('JILLS_SMOKE_REPO, JILLS_SMOKE_TITLE and JILLS_SMOKE_MESSAGE are required by the test-only fixture')
   // Preset plugins register after this fixture can start; wait for the default one.
   let preset
@@ -39,8 +40,11 @@ export async function apply(ctx) {
       setup: async (scope) => { await ctx.agentPresets.mount(scope, preset.id) },
     })
     try {
-      handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: message }], source: { kind: 'user' } }))
-      await handle.agent.whenIdle()
+      // An earlier turn first, so Jev's "last turns" for the hello message are not empty.
+      for (const text of earlier ? [earlier, message] : [message]) {
+        handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+        await handle.agent.whenIdle()
+      }
       ctx.sessionTitle.rename(handle.agent.session, title)
     } finally { await handle.dispose() }
   } finally { await lease[Symbol.asyncDispose]() }

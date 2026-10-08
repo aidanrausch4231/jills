@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { JillsConfig } from "./config.js";
+import { DEFAULT_TIMEOUT, type JillsConfig } from "./config.js";
 import { checkNesting, MAX_DEPTH, v1Refusal, type JillDef, type StepDef } from "./jillfile.js";
 import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
@@ -129,9 +129,15 @@ export class RunEngine {
       const refusal = v1Refusal(jill);
       if (refusal) throw new Error(refusal);
       checkNesting(jill, this.o.lookup);
-      const totalMs = parseDuration(jill.timeout ?? this.o.config.default_timeout);
-      if (totalMs)
-        totalTimer = setTimeout(() => this.halt("stuck", `total time limit ${String(jill.timeout ?? this.o.config.default_timeout)} reached`), totalMs);
+      // Every run has a total time limit: the Jill's, else config default_timeout
+      // (default 2h). The deadline is saved so `jills wait` can report stuck
+      // even when this runner hangs past it (see refreshRecord).
+      const limit = jill.timeout ?? this.o.config.default_timeout ?? DEFAULT_TIMEOUT;
+      const totalMs = parseDuration(limit) ?? parseDuration(DEFAULT_TIMEOUT)!;
+      r.timeLimit = String(limit);
+      r.deadline = new Date(Date.now() + totalMs).toISOString();
+      this.save();
+      totalTimer = setTimeout(() => this.halt("stuck", `total time limit ${String(limit)} reached`), totalMs);
       let ws: Workspace;
       if (jill.worktree) {
         const isoName = typeof jill.extra.isolation === "string" ? jill.extra.isolation : "worktree";

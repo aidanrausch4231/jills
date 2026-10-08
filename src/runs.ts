@@ -54,6 +54,10 @@ export interface RunRecord {
   events: RunEvent[];
   error?: string;
   conflicts?: string[];
+  /** Total time limit as written (Jill timeout or config default_timeout). */
+  timeLimit?: string;
+  /** When the total time limit runs out (ISO time); set when the run starts. */
+  deadline?: string;
 }
 
 export function runsDir(home: string): string {
@@ -88,6 +92,14 @@ export function listRecords(home: string): RunRecord[] {
 }
 
 const QUEUED_GRACE_MS = 60_000;
+/** A running record this long past its deadline is stuck even if its runner hangs. */
+export const DEADLINE_GRACE_MS = 30_000;
+
+function pastDeadline(r: RunRecord, now = Date.now()): boolean {
+  if (r.state !== "running" || !r.deadline) return false;
+  const t = Date.parse(r.deadline);
+  return Number.isFinite(t) && now > t + DEADLINE_GRACE_MS;
+}
 
 /**
  * Read a record and notice a dead runner: a running record whose runner pid is
@@ -99,10 +111,11 @@ export function refreshRecord(home: string, id: string): RunRecord | undefined {
   const dead =
     (r.state === "running" && r.pid !== undefined && !isPidAlive(r.pid)) ||
     (r.state === "queued" && Date.now() - Date.parse(r.created) > QUEUED_GRACE_MS && !isPidAlive(r.pid));
-  if (!dead) return r;
+  if (!dead && !pastDeadline(r)) return r;
   // Re-read right before writing to lower the race with a finishing runner.
   const again = loadRecord(home, id);
   if (!again || TERMINAL.has(again.state)) return again;
+  if (!dead && pastDeadline(again)) return markStuck(home, again);
   const wasQueued = again.state === "queued";
   again.state = "failed";
   again.error = wasQueued ? "runner never started" : "runner process exited without finishing the run";
@@ -119,6 +132,35 @@ export function refreshRecord(home: string, id: string): RunRecord | undefined {
   again.events.push({ at: again.finished, type: "failed", note: again.error });
   saveRecord(home, again);
   return again;
+}
+
+/**
+ * The runner let the run go past its total time limit (it hangs or ignored its
+ * timer): kill the runner and every step group still running, then record stuck.
+ * Kills come first so a dying runner cannot overwrite the stuck record.
+ */
+function markStuck(home: string, r: RunRecord): RunRecord {
+  if (r.pid && r.pid !== process.pid && isPidAlive(r.pid)) {
+    try {
+      process.kill(r.pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+  const at = new Date().toISOString();
+  for (const s of Object.values(r.steps)) {
+    if (s.state !== "running") continue;
+    if (s.pid) killGroup(s.pid, "SIGKILL");
+    s.state = "stuck";
+    s.reason = "run passed its total time limit; step process group killed";
+    s.finished = at;
+  }
+  r.state = "stuck";
+  r.error = `total time limit ${r.timeLimit ?? "?"} passed and the runner did not stop the run; runner and steps killed`;
+  r.finished = at;
+  r.events.push({ at, type: "stuck", note: r.error });
+  saveRecord(home, r);
+  return r;
 }
 
 export interface WaitOpts {
