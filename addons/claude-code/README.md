@@ -1,7 +1,7 @@
 # Jills add-on for Claude Code (v2)
 
 > **v2 — not part of the v1 install.** Jills v1 targets Pi and DeepSeek Harness. This add-on's code
-> and tests stay here (and still run in the root `pnpm test`), but do not install it for v1.
+> and tests stay here (run them with root `pnpm test:v2`; they are not in the v1 `pnpm test` gate), but do not install it for v1.
 
 Three pieces, none with Jills logic of its own:
 
@@ -48,4 +48,4 @@ Env knobs: `JILLS_HOME` (default `~/.jills`), `JILLS_LIB` (core entry, default `
 
 `node --test 'addons/claude-code/test/*.test.mjs'` (after `pnpm build`). Tests use a temp `JILLS_HOME`, no network,
 and cover: no match, manual suggestion, auto mode, quiet mode, slash prompts, bad input, transcript turns,
-the give-up time staying above the Jev timeout (with a slow local mock Jev). Root `pnpm test` runs them too.
+the give-up time staying above the Jev timeout (with a slow local mock Jev). Root `pnpm test:v2` runs them.

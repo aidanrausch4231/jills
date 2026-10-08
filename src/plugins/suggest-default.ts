@@ -1,0 +1,141 @@
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { NO_WORKTREE_NOTE } from "../jillfile.js";
+import { refreshRecord, TERMINAL } from "../runs.js";
+import { readJson, writeJsonAtomic } from "../util.js";
+import type { MatchResult, SuggestPlugin, Suggestion } from "./types.js";
+
+/**
+ * The default chat policy around the matchers ("anti-nag"): at most one
+ * suggestion per SUGGEST_EVERY messages, quiet / dismissed / running chats stay
+ * quiet, an ignored suggestion waits for a new task, and per-repo "never" mutes.
+ * State: $JILLS_HOME/sessions/<id>.json per chat, $JILLS_HOME/muted.json per repo.
+ */
+export interface SessionState {
+  id: string;
+  /** Messages seen by suggest() in this chat. */
+  messages: number;
+  /** /jills quiet: no suggestions in this chat until /jills on. */
+  quiet: boolean;
+  /** "Not this": quiet for the rest of this chat. */
+  dismissed: boolean;
+  /** A suggestion was ignored: wait until Jev sees a new task. */
+  waitingForNew: boolean;
+  lastSuggestion?: { jill: string; at: number; resolved: boolean; inputs?: Record<string, string> };
+  suggested: string[];
+  runs: string[];
+  updated?: string;
+}
+
+/** Rate limit: at most one suggestion per this many messages. */
+export const SUGGEST_EVERY = 3;
+
+function sessionFile(home: string, id: string): string {
+  const safe = /^[A-Za-z0-9._-]{1,80}$/.test(id) ? id : createHash("sha256").update(id).digest("hex").slice(0, 32);
+  return join(home, "sessions", `${safe}.json`);
+}
+
+export function loadSession(home: string, id: string): SessionState {
+  return readJson<SessionState>(sessionFile(home, id)) ?? { id, messages: 0, quiet: false, dismissed: false, waitingForNew: false, suggested: [], runs: [] };
+}
+
+function saveSession(home: string, s: SessionState): void {
+  s.updated = new Date().toISOString();
+  writeJsonAtomic(sessionFile(home, s.id), s);
+}
+
+// Per-repo mutes: repo -> Jill names ("*" = all).
+const mutes = (home: string) => readJson<Record<string, string[]>>(join(home, "muted.json")) ?? {};
+function setMutes(home: string, repo: string, names: string[] | undefined): void {
+  const m = mutes(home);
+  if (names) m[repo] = [...new Set([...(m[repo] ?? []), ...names])].sort();
+  else delete m[repo];
+  writeJsonAtomic(join(home, "muted.json"), m);
+}
+const isMuted = (list: string[], jill: string) => list.includes("*") || list.includes(jill);
+
+/** Jev (not keywords) named a Jill with inputs that differ from the ignored suggestion's. */
+function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): boolean {
+  const given = Object.entries(m.inputs ?? {}).filter(([, v]) => String(v).trim() !== "");
+  if (m.matcher === "keywords" || !given.length) return false;
+  return !last || last.jill !== m.jill || given.some(([k, v]) => (last.inputs ?? {})[k] !== v);
+}
+
+/** The main agent's instructions for a suggestion (manual: ask the user; auto: start it). */
+function agentText(auto: boolean, what: string, startCmd: string): string {
+  return auto
+    ? `[Jills] Jev matched ${what}. Auto mode is on: start it with the start_jill MCP tool (or \`${startCmd}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself.`
+    : `[Jills] Jev suggests ${what}. Manual mode: do NOT start it yourself. Ask the user whether to run it; they can type /jills go to start it, /jills dismiss to quiet this chat, or /jills never to mute it for this repo.`;
+}
+
+const settle = (s: SessionState) => void (s.lastSuggestion && (s.lastSuggestion.resolved = true));
+
+const defaultSuggest: SuggestPlugin = {
+  slot: "suggest",
+  apiVersion: 1,
+  name: "default",
+  async suggest(o, c) {
+    const { home, auto, threshold } = c.config;
+    const s = loadSession(home, o.session);
+    s.messages += 1;
+    const quiet = (reason: string, extra: Partial<Suggestion> = {}): Suggestion => {
+      saveSession(home, s);
+      return { action: "quiet", reason, auto, ...extra };
+    };
+    const last = s.lastSuggestion;
+    // A suggestion nobody acted on before this message counts as ignored.
+    if (last && !last.resolved && last.at < s.messages) last.resolved = s.waitingForNew = true;
+    if (s.quiet) return quiet("quiet mode is on for this chat (/jills on to resume)");
+    if (s.dismissed) return quiet("dismissed in this chat");
+    s.runs = s.runs.filter((id) => {
+      const r = refreshRecord(home, id);
+      return !!r && !TERMINAL.has(r.state);
+    });
+    if (s.runs.length) return quiet(`a Jill is running in this chat (${s.runs.join(", ")})`);
+    if (last && s.messages - last.at < SUGGEST_EVERY) return quiet(`at most one suggestion per ${SUGGEST_EVERY} messages`);
+    const muted = o.repo ? (mutes(home)[o.repo] ?? []) : [];
+    const jills = c.jills.filter((j) => !isMuted(muted, j.name));
+    if (!jills.length) return quiet("no Jills to suggest");
+    const m = await c.match({ message: o.message, recent: o.recent, jills, already: [...new Set(s.suggested)], config: c.config });
+    if (!m) return quiet("no matcher answered");
+    const base = { label: m.label, matcher: m.matcher, confidence: m.confidence };
+    if (m.label !== "new" || !m.jill) return quiet(m.label === "same" ? "same task as before" : "just talk", base);
+    if (s.waitingForNew) {
+      // Ignored → wait for a new task: the ignored Jill (or one already suggested
+      // here) stays quiet until a different Jill matches, or Jev names the same
+      // Jill for a different target (other inputs). Keyword hits are never "new".
+      const ignored = new Set([...(last ? [last.jill] : []), ...s.suggested]);
+      if (ignored.has(m.jill) && !isNewTarget(m, last)) return quiet("ignored; waiting for a new task", { ...base, jill: m.jill });
+      s.waitingForNew = false;
+    }
+    if (m.confidence < threshold) return quiet(`not confident enough (${m.confidence} < ${threshold})`, { ...base, jill: m.jill });
+    const j = c.jills.find((x) => x.name === m.jill);
+    if (!j) return quiet(`matcher named unknown Jill ${m.jill}`, base);
+    const inputs = m.inputs ?? {};
+    s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false, inputs };
+    s.suggested.push(j.name);
+    saveSession(home, s);
+    const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const warning = j.worktree ? undefined : NO_WORKTREE_NOTE;
+    const warnText = warning ? ` (${warning})` : "";
+    const text = `Jev: this looks like a job for Jill "${j.name}"${inputText}: ${j.description}${warnText}`;
+    const startCmd = `jills start ${j.name}${Object.entries(inputs).map(([k, v]) => ` --input ${k}=${JSON.stringify(v)}`).join("")} --session ${o.session}`;
+    const agentContext = agentText(auto, `Jill "${j.name}"${inputText} (confidence ${m.confidence})${warnText}`, startCmd);
+    return { action: "suggest", reason: "new task fits a saved Jill", jill: j.name, description: j.description, inputs, ...base, auto, text, agentContext, worktree: j.worktree, ...(warning ? { warning } : {}) };
+  },
+  chat(session, change, config) {
+    const home = config.home;
+    const s = session ? loadSession(home, session) : undefined;
+    if (change.kind === "never") setMutes(home, change.repo, [change.jill ?? s?.lastSuggestion?.jill ?? "*"]);
+    if (change.kind === "on" && change.unmute) setMutes(home, change.unmute, undefined);
+    if (!s) return undefined;
+    if (change.kind === "dismiss") s.dismissed = true;
+    if (change.kind === "quiet") s.quiet = true;
+    if (change.kind === "on") [s.quiet, s.dismissed, s.waitingForNew] = [false, false, false];
+    if (change.kind === "started") [s.runs, s.waitingForNew] = [[...s.runs, change.run], false];
+    if (change.kind === "dismiss" || change.kind === "never" || change.kind === "started") settle(s);
+    if (change.kind !== "last") saveSession(home, s);
+    return s.lastSuggestion ? { jill: s.lastSuggestion.jill, inputs: { ...s.lastSuggestion.inputs } } : undefined;
+  },
+};
+export default defaultSuggest;

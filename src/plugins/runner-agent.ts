@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { dirname, join } from "node:path";
 import { pathList, type JillsConfig } from "../config.js";
 import { parseFrontMatter, scanFirstWins, type Scan } from "../jillfile.js";
-import { spawnLogged } from "../proc.js";
+import { spawnLogged } from "./runner-command.js";
 import type { RunnerPlugin } from "./types.js";
 
 /**

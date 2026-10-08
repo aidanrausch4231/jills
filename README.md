@@ -150,14 +150,14 @@ jills try <jill> --dry-run [--input k=v]    # without --dry-run: run in the fore
 jills dismiss|quiet|on --session <id>       # on --unmute also clears repo mutes
 jills never [--session id] [--jill name] [--repo p]
 jills auto on|off
-jills new <name>
+jills new <name>                            # copies examples/JILL.template.md
 jills mcp
 ```
 
 Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggestion,
 4 run failed, 5 run stuck, 6 run needs you, 7 wait timed out.
 
-## Anti-nag rules (per chat session, `$JILLS_HOME/sessions/<id>.json`)
+## Anti-nag rules (default `suggest` plug-in, per chat in `$JILLS_HOME/sessions/<id>.json`)
 
 - Suggest only when Jev labels the message `new` with confidence ≥ threshold.
 - Dismissed ("Not this") → quiet for the rest of this chat.
@@ -168,8 +168,8 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - Never → muted for this repo (one Jill, or all) in `$JILLS_HOME/muted.json`.
 - `/jills quiet` → quiet mode for this chat.
 - At most one suggestion per 3 messages.
-- Jev may only fill inputs the Jill declares; any other key (such as `repo`) is dropped, for Jev,
-  keyword and plug-in matches and for `jills go`.
+- Jev may only fill inputs the Jill declares; core drops any other key (such as `repo`), for Jev,
+  keyword and plug-in matches, for any `suggest` plug-in's answer and for `jills go`.
 - The last suggestion's inputs are saved in the session state; `jills go` (and `/jills go`) uses
   them, with `--input` overriding single values.
 
@@ -191,10 +191,13 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 { slot: "check", check({ step, result, logPath }): Promise<{ ok: boolean; reason?: string }> }
 // hook: sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you); errors are ignored.
 { slot: "hook", on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void> }
+// suggest: the chat policy around the matchers (the last one loaded wins). ctx.match asks the matchers;
+// core keeps only declared inputs. chat() applies dismiss/quiet/on/never/started and reads "last".
+{ slot: "suggest", suggest(input: { session; message; recent; repo? }, ctx: { jills; config; match }): Promise<Suggestion>; chat(session, change: ChatChange, config): LastSuggestion | undefined }
 ```
 
 Built-ins: matcher `jev` then `keywords`; runner `command` and `agent`; isolation `worktree`;
-check `exit-code`. Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
+check `exit-code`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
 finished run's one-line result to a file:
 
 ```yaml
@@ -204,13 +207,14 @@ notify: {file: ~/jills-done.txt}
 
 Docker and OpenShell boxes are optional isolation plug-ins (none ship with core): a Jill opts in with
 `box: docker`, and `jills check` / start refuse it, naming the missing extension, until a matching
-isolation plug-in is listed under `plugins:`. `ssh` places come later in the same way.
+isolation plug-in is listed under `plugins:`. Remote machines (`ssh`) come later (v2), the same way.
 
 ## Develop
 
 ```bash
-pnpm build && pnpm test      # core + add-on tests (pi, dsh unit, and the v2 claude-code add-on); no network; temp JILLS_HOME
+pnpm build && pnpm test      # v1 gate: core + add-on tests (pi, dsh unit); no network; temp JILLS_HOME
 pnpm test:core               # core only
+pnpm test:v2                 # the v2 claude-code add-on (not part of pnpm test)
 pnpm e2e                     # jills start hello in a temp repo → wait → branch with commits
 pnpm smoke:dsh               # isolated real dsh + browser (not part of pnpm test)
 ```

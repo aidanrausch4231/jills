@@ -20,7 +20,8 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/src/cli.js",
     "test": "pnpm run test:core && pnpm run test:addons",
     "test:core": "node --test --test-concurrency=4 --test-timeout=60000 'dist/test/**/*.test.js'",
-    "test:addons": "pnpm --dir addons/dsh run build && pnpm --dir addons/pi run typecheck && node --test --test-concurrency=3 --test-timeout=90000 'addons/claude-code/test/*.test.mjs' addons/pi/test/jills-pi.test.ts 'addons/dsh/test/*.test.mjs'",
+    "test:addons": "pnpm --dir addons/dsh run build && pnpm --dir addons/pi run typecheck && node --test --test-concurrency=3 --test-timeout=90000 addons/pi/test/jills-pi.test.ts 'addons/dsh/test/*.test.mjs'",
+    "test:v2": "node --test --test-concurrency=3 --test-timeout=90000 'addons/claude-code/test/*.test.mjs'",
     "e2e": "bash scripts/e2e-hello.sh",
     "smoke:dsh": "pnpm --dir addons/dsh run build && pnpm --dir addons/dsh run smoke"
   },

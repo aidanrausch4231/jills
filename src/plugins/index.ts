@@ -6,7 +6,8 @@ import exitCodeCheck from "./check-exit-code.js";
 import jevMatcher from "./matcher-jev.js";
 import keywordsMatcher from "./matcher-keywords.js";
 import worktreeIsolation from "./isolation-worktree.js";
-import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin } from "./types.js";
+import defaultSuggest from "./suggest-default.js";
+import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
 
 export interface PluginSet {
   /** Tried in order; the first one that answers wins. */
@@ -17,6 +18,8 @@ export interface PluginSet {
   checks: Map<string, CheckPlugin>;
   /** Every hook sees every run event. */
   hooks: HookPlugin[];
+  /** Chat policy around the matchers (anti-nag, mutes); the last one loaded wins. */
+  suggest: SuggestPlugin;
 }
 
 export function builtinPlugins(): PluginSet {
@@ -26,6 +29,7 @@ export function builtinPlugins(): PluginSet {
     isolation: new Map([[worktreeIsolation.name, worktreeIsolation]]),
     checks: new Map([[exitCodeCheck.name, exitCodeCheck]]),
     hooks: [],
+    suggest: defaultSuggest,
   };
 }
 
@@ -40,6 +44,7 @@ export function validatePlugin(p: unknown, source: string): AnyPlugin {
     isolation: ["prepare", "child", "mergeBack", "commit"],
     check: ["check"],
     hook: ["on"],
+    suggest: ["suggest", "chat"],
   };
   const slot = String(o.slot);
   if (!need[slot]) throw new Error(`${source}: unknown plug-in slot "${slot}" (v1 slots: ${Object.keys(need).join(", ")})`);
@@ -63,6 +68,9 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
       break;
     case "hook":
       set.hooks.push(p);
+      break;
+    case "suggest":
+      set.suggest = p;
       break;
   }
 }

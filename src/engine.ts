@@ -7,11 +7,13 @@ import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.j
 import { bootId } from "./proc.js";
 import { loadRecord, saveHeartbeat, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate } from "./template.js";
-import { KeyedMutex, MAX_TIMER_MS, parseDuration } from "./util.js";
+import { KeyedMutex, MAX_TIMER_MS, parseLimit } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
 type Outputs = Record<string, { output: string }>;
+/** One Jill's graph inside a run: nested Jills get their own frame (deeper, own prefix). */
+type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; depth: number; stack: string[]; prefix: string };
 
 const OUTPUT_LIMIT = 8000;
 /** How often a runner writes its heartbeat into the run record. */
@@ -23,12 +25,9 @@ export const HEARTBEAT_MS = 5_000;
  * result is clamped to the largest timer Node allows. `label` names the value used.
  */
 export function totalLimit(jillTimeout: unknown, configDefault: unknown): { label: string; ms: number } {
-  for (const v of [jillTimeout, configDefault, DEFAULT_TIMEOUT]) {
-    const ms = parseDuration(v);
-    if (ms === undefined || !(ms > 0)) continue;
-    return ms > MAX_TIMER_MS ? { label: `${MAX_TIMER_MS}ms`, ms: MAX_TIMER_MS } : { label: String(v), ms };
-  }
-  return { label: DEFAULT_TIMEOUT, ms: 7_200_000 };
+  const v = [jillTimeout, configDefault].find((x) => parseLimit(x)) ?? DEFAULT_TIMEOUT;
+  const ms = parseLimit(v)!;
+  return { label: ms === MAX_TIMER_MS ? `${ms}ms` : String(v), ms };
 }
 
 /** Steps that write and may run at the same time as another writer → child worktrees. */
@@ -75,8 +74,7 @@ export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string,
   const env: Record<string, string> = { JILLS_HOME: c.config.home, JILLS_RUN_ID: c.runId, JILLS_STEP: c.key, JILLS_JILL: jill.name, JILLS_WORKSPACE: c.cwd };
   if (c.copy !== undefined) env.JILLS_COPY = String(c.copy);
   for (const [k, v] of Object.entries(inputs)) env[`JILLS_INPUT_${k.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`] = v;
-  const ms = parseDuration(step.timeout);
-  return { runner, text, env: { ...env, ...shell?.env }, shellEnv: shell?.env ?? {}, timeoutMs: ms && ms > 0 ? Math.min(ms, MAX_TIMER_MS) : undefined };
+  return { runner, text, env: { ...env, ...shell?.env }, shellEnv: shell?.env ?? {}, timeoutMs: parseLimit(step.timeout) };
 }
 
 function readOutput(path: string | undefined): string {
@@ -135,13 +133,8 @@ export class RunEngine {
     this.record.events.push(e);
     this.save();
     const r = this.record;
-    for (const fn of [() => this.o.onEvent?.(e, r), ...this.o.plugins.hooks.map((h) => () => h.on(e, r, this.o.config))]) {
-      try {
-        this.hooks.push(Promise.resolve(fn()).catch(() => undefined)); // listeners never break a run
-      } catch {
-        /* ignore */
-      }
-    }
+    for (const fn of [() => this.o.onEvent?.(e, r), ...this.o.plugins.hooks.map((h) => () => h.on(e, r, this.o.config))])
+      this.hooks.push(Promise.resolve().then(fn).catch(() => undefined)); // listeners never break a run
   }
 
   /** Stop the run with this outcome (first one wins) and kill running steps. */
@@ -188,7 +181,7 @@ export class RunEngine {
       }
       Object.assign(r, { workspace: ws.dir, branch: ws.branch, isolated: ws.isolated });
       this.save();
-      this.finish(this.outcome ?? (await this.runGraph(jill, ws, r.inputs, 1, [jill.name], "")));
+      this.finish(this.outcome ?? (await this.runGraph({ jill, ws, inputs: r.inputs, depth: 1, stack: [jill.name], prefix: "" })));
     } catch (e) {
       r.error ??= (e as Error).message;
       this.finish(this.outcome ?? "failed");
@@ -210,7 +203,8 @@ export class RunEngine {
     this.emit(outcome === "done" ? "finished" : outcome, undefined, r.error);
   }
 
-  private async runGraph(jill: JillDef, ws: Workspace, inputs: Record<string, string>, depth: number, stack: string[], prefix: string): Promise<Outcome> {
+  private async runGraph(f: Frame): Promise<Outcome> {
+    const { jill, ws, depth, stack } = f;
     if (depth > MAX_DEPTH) throw new Error(`Jill nesting too deep: ${stack.join(" -> ")} (max depth ${MAX_DEPTH})`);
     const parallel = ws.isolated ? parallelWriters(jill, this.o.lookup) : new Set<string>();
     const state = new Map(jill.steps.map((s) => [s.name, "pending" as "pending" | "running" | "done" | "failed"]));
@@ -220,9 +214,7 @@ export class RunEngine {
       for (const s of this.outcome ? [] : jill.steps) {
         if (state.get(s.name) !== "pending" || !s.needs.every((n) => state.get(n) === "done")) continue;
         state.set(s.name, "running");
-        const copies = Array.from({ length: s.copies }, (_, i) =>
-          this.runInstance(jill, s, s.copies > 1 ? i + 1 : undefined, ws, inputs, depth, stack, prefix, parallel.has(s.name), outputs),
-        );
+        const copies = Array.from({ length: s.copies }, (_, i) => this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name)));
         const p = Promise.all(copies).then((res) => {
           outputs[s.name] = { output: res.map((x) => x.output).filter(Boolean).join("\n\n---\n\n") };
           state.set(s.name, res.every((x) => x.ok) ? "done" : "failed");
@@ -236,18 +228,8 @@ export class RunEngine {
     return this.outcome ?? ([...state.values()].every((v) => v === "done") ? "done" : "failed");
   }
 
-  private async runInstance(
-    jill: JillDef,
-    step: StepDef,
-    copy: number | undefined,
-    ws: Workspace,
-    inputs: Record<string, string>,
-    depth: number,
-    stack: string[],
-    prefix: string,
-    useChild: boolean,
-    outputs: Outputs,
-  ): Promise<{ ok: boolean; output: string }> {
+  private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined, useChild: boolean): Promise<{ ok: boolean; output: string }> {
+    const { jill, ws, inputs, stack, prefix } = f;
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}`;
     const rec: StepRecord = { key, step: step.name, jill: jill.name, copy, kind: step.jill ? "jill" : step.agent ? "agent" : "run", state: "skipped" };
     this.record.steps[key] = rec;
@@ -272,7 +254,7 @@ export class RunEngine {
         const vars = { inputs, copy, run_id: this.record.id, steps: outputs };
         const childInputs = step.inputs ? Object.fromEntries(Object.entries(step.inputs).map(([k, v]) => [k, renderTemplate(v, vars)])) : { ...inputs };
         for (const i of child.inputs) if (childInputs[i.name] === undefined && i.default !== undefined) childInputs[i.name] = i.default;
-        const out = await this.runGraph(child, iws, childInputs, depth + 1, [...stack, child.name], `${key}/`);
+        const out = await this.runGraph({ jill: child, ws: iws, inputs: childInputs, depth: f.depth + 1, stack: [...stack, child.name], prefix: `${key}/` });
         if (out !== "done") return fail(out, `nested Jill ${child.name} ended ${out}`);
         const inner = Object.entries(this.record.steps).filter(([k]) => k.startsWith(`${key}/`));
         output = inner.map(([, s]) => readOutput(s.log)).filter(Boolean).slice(-1).join("");

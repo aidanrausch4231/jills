@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { dismiss, never, on, quiet, suggest, start, wait, setAuto } from "../src/api.js";
-import { loadSession } from "../src/session.js";
+import { loadSession } from "../src/plugins/suggest-default.js";
 import { loadConfig } from "../src/config.js";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
 

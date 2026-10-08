@@ -260,7 +260,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
         const core = await getCore();
         switch (sub) {
           case "go": {
-            const jill = words[0] ?? core.lastSuggested(session, { home })?.jill;
+            const jill = words[0] ?? (await core.lastSuggested(session, { home }))?.jill;
             if (!jill) {
               notify("Jills: nothing suggested in this chat yet; use /jills go <jill> [key=value ...]", "warning");
               return;
@@ -281,7 +281,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
             return;
           }
           case "dismiss":
-            core.dismiss(session, { home });
+            await core.dismiss(session, { home });
             setWidget(undefined);
             notify("Jills: quiet for this chat (/jills on to resume).");
             return;
@@ -292,7 +292,7 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
             return;
           }
           case "quiet":
-            core.quiet(session, { home });
+            await core.quiet(session, { home });
             setWidget(undefined);
             notify("Jills: quiet mode on for this chat (/jills on to resume).");
             return;

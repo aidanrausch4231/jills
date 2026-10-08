@@ -33,6 +33,12 @@ export function parseDuration(v: unknown): number | undefined {
 /** Largest delay setTimeout accepts (2^31-1 ms); larger values fire at once. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/** A time limit in ms: parseDuration(v) clamped to MAX_TIMER_MS; undefined when unset or <= 0. */
+export function parseLimit(v: unknown): number | undefined {
+  const ms = parseDuration(v);
+  return ms && ms > 0 ? Math.min(ms, MAX_TIMER_MS) : undefined;
+}
+
 export function newId(): string {
   const iso = new Date().toISOString(); // 2026-10-07T12:34:56.789Z
   return `${iso.slice(0, 10).replace(/-/g, "")}-${iso.slice(11, 19).replace(/:/g, "")}-${randomBytes(3).toString("hex")}`;

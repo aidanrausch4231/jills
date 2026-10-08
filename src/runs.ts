@@ -136,6 +136,21 @@ export function stuckReason(r: RunRecord, staleMs = STALE_MS): string | undefine
 }
 
 /**
+ * Write an observer's terminal mark: the run and its running steps end as
+ * `state`. Re-reads first, so a record its runner finished meanwhile wins.
+ */
+export function markTerminal(home: string, r: RunRecord, state: "failed" | "stuck", error: string, stepReason = error): RunRecord | undefined {
+  const at = new Date().toISOString();
+  Object.assign(r, { state, error, finished: at });
+  for (const s of Object.values(r.steps)) if (s.state === "running") Object.assign(s, { state, reason: stepReason, finished: at });
+  r.events.push({ at, type: state, note: error });
+  const again = loadRecord(home, r.id); // lower the race with a finishing runner
+  if (!again || TERMINAL.has(again.state)) return again;
+  saveRecord(home, r);
+  return r;
+}
+
+/**
  * Read a record and notice a dead or hung runner. Observers never signal
  * anything: a queued run whose runner never started becomes failed; a running
  * one with a stuckReason becomes stuck (`jills stop <id>` stops its processes).
@@ -143,24 +158,9 @@ export function stuckReason(r: RunRecord, staleMs = STALE_MS): string | undefine
 export function refreshRecord(home: string, id: string, staleMs?: number): RunRecord | undefined {
   const r = loadRecord(home, id);
   if (!r || TERMINAL.has(r.state)) return r;
-  const at = new Date().toISOString();
-  if (r.state === "queued") {
-    if (Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS) return r;
-    r.state = "failed";
-    r.error = "runner never started";
-  } else {
-    const why = stuckReason(r, staleMs);
-    if (!why) return r;
-    r.state = "stuck";
-    r.error = `${why}; run \`jills stop ${r.id}\` to stop its processes`;
-    for (const s of Object.values(r.steps)) if (s.state === "running") Object.assign(s, { state: "stuck", reason: why, finished: at });
-  }
-  r.finished = at;
-  r.events.push({ at, type: r.state as RunEvent["type"], note: r.error });
-  const again = loadRecord(home, id); // lower the race with a finishing runner
-  if (!again || TERMINAL.has(again.state)) return again;
-  saveRecord(home, r);
-  return r;
+  if (r.state === "queued") return Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS ? r : markTerminal(home, r, "failed", "runner never started");
+  const why = stuckReason(r, staleMs);
+  return why ? markTerminal(home, r, "stuck", `${why}; run \`jills stop ${r.id}\` to stop its processes`, why) : r;
 }
 
 export interface WaitOpts {
