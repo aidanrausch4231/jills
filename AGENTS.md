@@ -56,8 +56,8 @@ Jills follows the same rules:
 - Stopping or timing out a run stops every process it started, and never signals an
   unrelated process.
 - Worktree off → Jills never commits. Nothing merges into the user's branch.
-- Credentials: read only from the env var named in config; never log them; never read
-  other agents' credential files.
+- Credentials: read only from the harness's own credential API or the env var named in config;
+  never log them; never read credential files.
 - `box:` (docker, openshell, ...) and remote machines are add-ons; without the add-on a
   Jill that asks for one is refused clearly.
 

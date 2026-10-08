@@ -78,8 +78,9 @@ export function parseJevReply(content: string, jills: string[] | Pick<JillSummar
 }
 
 /**
- * Jev: one stateless OpenRouter chat call per message. The key comes ONLY from
- * the env var named by jev.key_env and is never logged. No key, a network error
+ * Jev: one stateless OpenRouter chat call per message. The key comes from the
+ * harness's own login (input.jevKey), else the env var named by jev.key_env; it
+ * is never logged or stored. No key, a network error
  * or a bad reply returns undefined so the keywords matcher answers instead.
  */
 const jevMatcher: MatcherPlugin = {
@@ -88,7 +89,8 @@ const jevMatcher: MatcherPlugin = {
   name: "jev",
   async match(input) {
     const jev = jevConfig(input.config);
-    const key = process.env[jev.key_env];
+    const own = await input.jevKey?.(jev.key_env).catch(() => undefined);
+    const key = own?.trim() || process.env[jev.key_env];
     if (!key) return undefined;
     const f: FetchLike = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     try {

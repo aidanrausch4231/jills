@@ -53,7 +53,7 @@ export interface Turn {
 /** The Jills library functions this add-on calls (src/index.ts of the core). */
 export interface JillsCore {
   /** Ask Jev about one message (with up to the last 3 turns before it). */
-  suggest(o: { session: string; message: string; recent?: Turn[]; cwd?: string; home?: string }): Promise<CoreSuggestion>
+  suggest(o: { session: string; message: string; recent?: Turn[]; cwd?: string; home?: string; jevKey?: BridgeOptions['jevKey'] }): Promise<CoreSuggestion>
   /** Start a detached run. */
   start(jill: string, o: { inputs?: Record<string, string>; cwd?: string; session?: string; home?: string }): Promise<CoreRunRecord>
   /** Read one run record. */
@@ -89,6 +89,8 @@ export interface BridgeOptions {
   now?: () => number
   /** Session runtime access (recent turns, telling the main agent). */
   agent?: AgentPort | undefined
+  /** Jev's key from the harness's credentials (by jev.key_env's name); core falls back to the env var. Never logged or stored. */
+  jevKey?: ((name: string) => Promise<string | undefined>) | undefined
 }
 
 /** Shown on a card whose Jill sets worktree: false. */
@@ -151,6 +153,11 @@ export function loadCore(lib = ''): () => Promise<JillsCore> {
     : new URL('../../../dist/src/index.js', import.meta.url).href) as Promise<JillsCore>)
 }
 
+/** Jev's key from dsh's own credentials service (`ctx.credentials`; ref = jev.key_env's name, e.g. OPENROUTER_API_KEY). Never logged. */
+export function credentialsKey(get: () => { resolve(ref: string): Promise<{ value?: string } | undefined> } | undefined): BridgeOptions['jevKey'] {
+  return async (name) => { const c = get(); return c && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? (await c.resolve(name))?.value : undefined }
+}
+
 /** Jills keeps per-chat state under this id. */
 export function jillsSession(sessionId: string): string {
   return `dsh-${sessionId}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80)
@@ -189,12 +196,14 @@ export class JillsBridge {
   private readonly maxAgeMs: number
   private readonly now: () => number
   private readonly agent: AgentPort | undefined
+  private readonly jevKey: BridgeOptions['jevKey']
 
   constructor(private readonly core: () => Promise<JillsCore>, options: BridgeOptions = {}) {
     this.home = options.home || undefined
     this.maxAgeMs = options.maxAgeMs ?? 5 * 60_000
     this.now = options.now ?? Date.now
     this.agent = options.agent
+    this.jevKey = options.jevKey
   }
 
   private async recent(sessionId: string, messageId: string): Promise<Turn[]> {
@@ -227,7 +236,7 @@ export class JillsBridge {
     try {
       const core = await this.core()
       const recent = await this.recent(request.sessionId, messageId)
-      const s = await core.suggest({ session: jillsSession(request.sessionId), message: request.text, recent, cwd, ...this.opts() })
+      const s = await core.suggest({ session: jillsSession(request.sessionId), message: request.text, recent, cwd, ...this.opts(), ...(this.jevKey ? { jevKey: this.jevKey } : {}) })
       if (s.action !== 'suggest' || !s.jill) return { ...emptyCard(messageId, 'quiet', s.reason), matcher: s.matcher ?? '', confidence: s.confidence ?? 0 }
       const fields = (await core.listJills(this.opts())).find(j => j.name === s.jill)?.inputs ?? []
       const card: JillsCard = {

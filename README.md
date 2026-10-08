@@ -47,7 +47,7 @@ agent_paths: [~/.jills/agents]  # agent runner plug-in: searched in order, first
 jill_paths: [~/.jills/jills]    # folders of <name>/JILL.md, first name wins
 jev:
   model: typesafe/jev-router    # OpenRouter model
-  key_env: OPENROUTER_API_KEY   # key is read ONLY from this env var, never logged
+  key_env: OPENROUTER_API_KEY   # fallback env var (and dsh credential ref) for the key; never logged
   threshold: 0.7                # suggest only when confidence >= threshold
 agent_cli: pi                   # pi (v1); other agent CLIs are add-ons
 # agent_bin: /path/to/pi        # optional binary override
@@ -57,7 +57,10 @@ default_model: openai-codex/gpt-5.6-sol
 # default_timeout: 2h           # total limit for Jills that set no timeout (default 2h)
 ```
 
-No key or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
+Jev uses the harness's OpenRouter login; the env var is a fallback. Pi passes its own OpenRouter key
+(`ctx.modelRegistry.getApiKeyForProvider("openrouter")`), the dsh add-on asks dsh's credentials service
+for the ref named by `key_env`; the CLI and MCP server use the env var only. The key is never logged,
+written to Jills state or run records, or sent to agents. No key or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
 `auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a
 plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `jev:` to the Jev matcher).
 

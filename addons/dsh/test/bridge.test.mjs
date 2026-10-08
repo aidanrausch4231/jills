@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { JillsBridge, jillsSession, loadCore, NO_WORKSPACE, runLine, startedNotice, turnsBefore } from '../lib/types/bridge.js'
+import { credentialsKey, JillsBridge, jillsSession, loadCore, NO_WORKSPACE, runLine, startedNotice, turnsBefore } from '../lib/types/bridge.js'
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const lib = join(repoRoot, 'dist/src/index.js')
@@ -33,7 +33,7 @@ after(() => { jev.close() })
 
 let n = 0
 /** A fresh Jills home + git repo; `jev` points the matcher at the mock server. */
-function fixture({ auto = false, jev: useJev = false, agent = undefined } = {}) {
+function fixture({ auto = false, jev: useJev = false, agent = undefined, jevKey = undefined } = {}) {
   const dir = join(root, `case-${++n}`)
   const home = join(dir, 'home'), repo = join(dir, 'repo')
   mkdirSync(home, { recursive: true }); mkdirSync(repo, { recursive: true })
@@ -41,7 +41,7 @@ function fixture({ auto = false, jev: useJev = false, agent = undefined } = {}) 
   writeFileSync(join(home, 'config.yml'), `auto: ${auto}\njill_paths: [${JSON.stringify(join(repoRoot, 'examples'))}]\nagent_paths: []\n${jevLine}\n`)
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo })
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo })
-  const bridge = new JillsBridge(loadCore(lib), { home, ...(agent ? { agent } : {}) })
+  const bridge = new JillsBridge(loadCore(lib), { home, ...(agent ? { agent } : {}), ...(jevKey ? { jevKey } : {}) })
   return { home, repo, bridge }
 }
 const msg = (over = {}) => ({ sessionId: 'sess-1', messageId: 'm1', text: 'please say hello to the team', cwd: '', sentAt: Date.now(), ...over })
@@ -84,6 +84,32 @@ test('Jev request shape and inputs come through the card', async () => {
     assert.equal(jevRequests[0].body.model, 'typesafe/jev-router')
     assert.equal(jevRequests[0].auth, 'Bearer test-key')
     assert.match(jevRequests[0].body.messages[1].content, /New message: "greet Aidan for me"/)
+  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+})
+
+test('Jev uses the key from dsh credentials (resolve by jev.key_env name); env var is the fallback; never stored', async () => {
+  const OWN = 'sk-dsh-login-not-real'
+  const refs = []
+  let value = OWN
+  const credentials = { async resolve(ref) { refs.push(ref); return value ? { value } : undefined } }
+  process.env.JILLS_TEST_JEV_KEY = 'env-key'
+  try {
+    jevRequests.length = 0
+    jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+    const { bridge, repo, home } = fixture({ jev: true, jevKey: credentialsKey(() => credentials) })
+    const card = await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
+    assert.equal(card.matcher, 'jev')
+    assert.equal(jevRequests[0].auth, `Bearer ${OWN}`)
+    assert.deepEqual(refs, ['JILLS_TEST_JEV_KEY'])
+    assert.ok(!JSON.stringify(card).includes(OWN), 'key not on the card')
+    const started = await bridge.start({ sessionId: 'sess-1', messageId: 'm1', jill: 'hello', inputs: card.inputs, cwd: repo })
+    await untilTerminal(bridge, started.run.runId)
+    const files = (d) => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(d, e.name)) : [join(d, e.name)])
+    for (const f of files(home)) assert.ok(!readFileSync(f, 'utf8').includes(OWN), `key written to ${f}`)
+    value = undefined // no stored credential: the env var named in config
+    await bridge.suggest(msg({ sessionId: 'sess-k2', messageId: 'm2', text: 'greet Aidan again', cwd: repo }))
+    assert.equal(jevRequests.at(-1).auth, 'Bearer env-key')
+    assert.equal(await credentialsKey(() => undefined)('OPENROUTER_API_KEY'), undefined, 'no credentials service: core uses the env var')
   } finally { delete process.env.JILLS_TEST_JEV_KEY }
 })
 

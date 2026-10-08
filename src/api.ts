@@ -48,6 +48,8 @@ export interface SuggestOpts extends BaseOpts {
   /** Repo the chat works in (for per-repo "never"). Defaults to the git root of cwd. */
   repo?: string;
   cwd?: string;
+  /** The harness's own key lookup for Jev (gets jev.key_env's name); only passed to matchers, never stored. */
+  jevKey?: (name: string) => Promise<string | undefined>;
 }
 
 /** The repo a chat works in: `repo`, else the git root of cwd (undefined outside git). */
@@ -75,7 +77,7 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   const declared = (m: MatchResult | undefined) => (m?.jill ? { ...m, inputs: declaredInputs(c.lookup(m.jill), m.inputs) } : m);
   const match: SuggestCtx["match"] = async (input) => {
     for (const matcher of c.plugins.matchers) {
-      const m = await matcher.match(input);
+      const m = await matcher.match({ ...input, jevKey: o.jevKey });
       if (m) return declared(m);
     }
     return undefined;
@@ -113,9 +115,8 @@ async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record:
   const { j, inputs, repo } = validate(c, name, o);
   if (!existsSync(repo)) throw new Error(`repo folder ${repo} does not exist`);
   const id = newId();
-  const created = new Date().toISOString();
   const logDir = runLogDir(c.config.home, id);
-  const record: RunRecord = { version: 1, id, jill: j.name, jillPath: j.path, inputs, state: "queued", created, repo, session: o.session, logDir, steps: {}, events: [] };
+  const record: RunRecord = { version: 1, id, jill: j.name, jillPath: j.path, inputs, state: "queued", created: new Date().toISOString(), repo, session: o.session, logDir, steps: {}, events: [] };
   mkdirSync(logDir, { recursive: true });
   saveRecord(c.config.home, record);
   return { c, record };
@@ -197,8 +198,7 @@ export async function stop(id: string, o: BaseOpts & { graceMs?: number } = {}):
   if (!r) throw new Error(`no run ${id}`);
   const pids = await stopTagged(id, loadHeartbeat(home, id)?.bootId, o.graceMs);
   const after = loadRecord(home, id) ?? r;
-  if (TERMINAL.has(after.state)) return { record: after, pids };
-  return { record: markTerminal(home, after, "failed", "stopped by jills stop") ?? after, pids };
+  return { record: TERMINAL.has(after.state) ? after : (markTerminal(home, after, "failed", "stopped by jills stop") ?? after), pids };
 }
 
 /**

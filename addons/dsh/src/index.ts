@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { JillsBridge, loadCore, turnsBefore, type AgentPort } from './bridge.ts'
+import { credentialsKey, JillsBridge, loadCore, turnsBefore, type AgentPort } from './bridge.ts'
 import type { CardAction, JillsCard, RunLine, StartRequest, SuggestRequest } from './types.ts'
 
 export type * from './types.ts'
@@ -86,7 +86,7 @@ export default class JillsDsh extends TypertRemoteService {
    */
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'jills')
-    this.bridge = new JillsBridge(loadCore(config.lib ?? ''), { home: config.home ?? '', maxAgeMs: config.maxAgeMs ?? 5 * 60_000, agent: agentPort(ctx) })
+    this.bridge = new JillsBridge(loadCore(config.lib ?? ''), { home: config.home ?? '', maxAgeMs: config.maxAgeMs ?? 5 * 60_000, agent: agentPort(ctx), jevKey: credentialsKey(() => ctx.get('credentials')) })
   }
 
   /**

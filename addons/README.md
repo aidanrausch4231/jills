@@ -18,7 +18,7 @@ type-checks the Pi extension). The dsh browser smoke runs separately: `pnpm smok
 Library API the add-ons use (see `src/index.ts`):
 
 ```ts
-suggest({ session, message, recent?, repo?, cwd?, home? }): Promise<Suggestion>
+suggest({ session, message, recent?, repo?, cwd?, home?, jevKey? }): Promise<Suggestion>  // jevKey(name): the harness's own OpenRouter key; env var is the fallback
 start(jill, { inputs?, cwd?, session?, home? }): Promise<RunRecord>      // detached runner, returns at once
 wait(runId, { timeoutMs?, pollMs?, onUpdate?, home? }): Promise<{ record, timedOut, line }>
 status(runId?, { home? }): RunRecord | RunRecord[] | undefined

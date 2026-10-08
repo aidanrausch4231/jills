@@ -151,6 +151,20 @@ describe("pi add-on: suggestions", () => {
     assert.equal(t.called("start").length, 0, "manual mode never starts on its own");
   });
 
+  it("Jev's key comes from Pi's own OpenRouter login (getApiKeyForProvider), never from a file", async () => {
+    const t = setup();
+    const asked: string[] = [];
+    t.ctx.modelRegistry = { getApiKeyForProvider: async (p: string) => (asked.push(p), "sk-pi-login") };
+    await t.emit("input", { type: "input", text: "please say hello to pi", source: "interactive" }, t.ctx);
+    await t.emit("before_agent_start", { type: "before_agent_start", prompt: "x" }, t.ctx);
+    const [args] = t.called("suggest");
+    assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), "sk-pi-login");
+    assert.deepEqual(asked, ["openrouter"]);
+    assert.ok(!JSON.stringify(t.calls).includes("sk-pi-login") && !JSON.stringify(t.sent).includes("sk-pi-login"), "key never shown or sent");
+    delete t.ctx.modelRegistry; // older Pi without a registry: no key, core uses the env var
+    assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), undefined);
+  });
+
   it("worktree: false suggestion shows 'no worktree: edits your checkout directly' (widget, notice, auto message)", async () => {
     const warning = "no worktree: edits your checkout directly";
     const manual = setup({
