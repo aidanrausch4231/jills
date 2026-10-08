@@ -1,7 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { checkout, git, gitRaw } from "./git.js";
-import type { IsolationPlugin, MergeCheck, MergeResult, MergeStart, Workspace } from "./types.js";
+import { mergeCheck, mergeStart, retry } from "./squash-merge.js";
+import { ancestors, type JillDef, type StepDef } from "../jillfile.js";
+import type { IsolationPlugin, MergeResult, Workspace } from "./types.js";
 
 /** Git work on one workspace dir runs one at a time (parallel steps commit and merge back). */
 const tails = new Map<string, Promise<unknown>>();
@@ -22,7 +24,7 @@ function safe(s: string): string {
  * $JILLS_HOME/worktrees/. Parallel writers get child worktrees branched from the
  * parent branch; merge-back uses merge-tree --write-tree + commit-tree + a CAS
  * update-ref, so a conflict never touches the parent. Never merges into the
- * user's branch itself: a `merges: true` step does, judged by mergeStart/mergeCheck. Worktrees are kept.
+ * user's branch itself: a `merges: true` step does, judged by squash-merge.ts. Worktrees are kept.
  */
 const worktreeIsolation: IsolationPlugin = {
   slot: "isolation",
@@ -53,40 +55,26 @@ const worktreeIsolation: IsolationPlugin = {
 
   mergeBack: (parent, child, message) => locked(parent.dir, () => mergeBack(parent, child, message)),
   commit: (ws, message) => locked(ws.dir, () => commit(ws, message)),
+  parallel: parallelWriters,
   mergeStart,
   mergeCheck,
+  retry,
 };
 
-/** Before a merges: true step: the user's checkout must be clean and on `base`. Returns the base tip and the run commit. */
-async function mergeStart(ws: Workspace, base: string): Promise<MergeStart | string> {
-  const repo = ws.repo!;
-  const [b, pre] = await Promise.all([checkout(repo), git(ws.dir, ["rev-parse", "HEAD"])]);
-  if (b.dirty) return `your checkout ${repo} has uncommitted changes; nothing was merged`;
-  if (b.branch !== base) return `your checkout ${repo} is on another branch (${b.branch ?? "detached HEAD"}, not ${base}); nothing was merged`;
-  return { tip: b.head, pre };
-}
-
-/**
- * After a merges: true step. "merged": `base` got exactly one new commit on the
- * old tip whose tree is the squash of the run commit (merge-tree of tip and pre),
- * or there was nothing to merge. "untouched": nothing changed. "bad": anything
- * else (run branch changed, checkout dirty / elsewhere / behind, wrong commit).
- */
-async function mergeCheck(ws: Workspace, base: string, { tip, pre }: MergeStart): Promise<MergeCheck> {
-  const repo = ws.repo!;
-  const [run, b, line, mt] = await Promise.all([
-    git(ws.dir, ["rev-parse", "HEAD"]),
-    checkout(repo),
-    git(repo, ["log", "-1", "--format=%H %T %P", `refs/heads/${base}`]),
-    gitRaw(repo, ["merge-tree", "--write-tree", tip, pre]),
-  ]);
-  const [commit, tree, ...parents] = line.split(" ");
-  const want = mt.code === 0 ? mt.stdout.split("\n")[0]!.trim() : undefined;
-  if (run !== pre) return { state: "bad", reason: `the step changed the run branch ${ws.branch}` };
-  if (b.dirty || b.branch !== base || b.head !== commit) return { state: "bad", reason: `${repo} must be clean, on ${base}, at its new tip` };
-  if (commit === tip) return { state: want === tree ? "merged" : "untouched" };
-  if (parents.join() === tip && want === tree) return { state: "merged" };
-  return { state: "bad", reason: `${base} must get exactly one new commit on ${tip.slice(0, 12)} with the squash of ${ws.branch}` };
+/** Steps that write and may run at the same time as another writer (or as their own copies) → child worktrees. */
+function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | undefined): Set<string> {
+  const writes = (s: StepDef, seen: Set<string>): boolean => {
+    if (s.writes) return true;
+    const j = s.jill && !seen.has(s.jill) ? lookup(s.jill) : undefined;
+    return !!j && j.steps.some((x) => writes(x, seen.add(j.name)));
+  };
+  const writers = jill.steps.filter((s) => writes(s, new Set()));
+  const out = new Set<string>();
+  for (const w of writers) {
+    if (w.copies > 1) out.add(w.name);
+    for (const o of writers) if (o !== w && !ancestors(jill.steps, w.name).has(o.name) && !ancestors(jill.steps, o.name).has(w.name)) out.add(w.name);
+  }
+  return out;
 }
 
 async function mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult> {

@@ -70,24 +70,24 @@ export interface Workspace {
   base?: string;
   isolated: boolean;
 }
-export type MergeStart = { tip: string; pre: string };
 export type MergeCheck = { state: "merged" | "untouched" | "bad"; reason?: string };
 export type MergeResult = { ok: true; commit: string } | { ok: false; conflicts: string[]; message: string };
 export interface IsolationPlugin {
   slot: "isolation";
   apiVersion: 1;
   name: string;
-  /** Outermost run: make the workspace. */
+  /** prepare: the outermost workspace; child: one for a parallel writer, from the parent; mergeBack: child into parent (a conflict leaves it untouched). */
   prepare(opts: { repo: string; jill: string; runId: string; config: JillsConfig }): Promise<Workspace>;
-  /** Make a child workspace for a parallel writer, branched from the parent. */
   child(parent: Workspace, opts: { key: string; runId: string; config: JillsConfig }): Promise<Workspace>;
-  /** Merge a child back into the parent; conflict leaves it untouched. Serializes its own git work per dir (also commit). */
   mergeBack(parent: Workspace, child: Workspace, message: string): Promise<MergeResult>;
-  /** Commit the workspace's changes; returns the commit or undefined when clean. */
+  /** commit: the workspace's changes (the commit, or undefined when clean). parallel: steps that get a child workspace. */
   commit(ws: Workspace, message: string): Promise<string | undefined>;
-  /** Optional, both needed for `merges: true`: mergeStart refuses (reason) a dirty or switched user checkout, else gives the base tip and run commit; mergeCheck judges the result. */
-  mergeStart?(ws: Workspace, base: string): Promise<MergeStart | string>;
-  mergeCheck?(ws: Workspace, base: string, start: MergeStart): Promise<MergeCheck>;
+  parallel?(jill: JillDef, lookup: (name: string) => JillDef | undefined): Set<string>;
+  /** Optional, needed for `merges: true`: mergeStart refuses (reason) an unsafe checkout, else snapshots it; mergeCheck judges the result. */
+  mergeStart?(ws: Workspace, base: string): Promise<object | string>;
+  mergeCheck?(ws: Workspace, base: string, start: object): Promise<MergeCheck>;
+  /** Optional, before a back-arrow reruns: drop stale changes (`discard`), merge the base in after a failed merge step (`base`); returns feedback. */
+  retry?(ws: Workspace, o: { discard?: boolean; base?: string }): Promise<string>;
 }
 // ---- check ----
 export type CheckInput = { step: StepDef; result: StepRunResult; logPath: string };

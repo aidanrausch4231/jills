@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DEFAULT_TIMEOUT, type JillsConfig } from "./config.js";
 import { ancestors, checkNesting, type JillDef, type StepDef } from "./jillfile.js";
 import type { PluginSet } from "./plugins/index.js";
-import type { IsolationPlugin, MergeStart, RunnerPlugin, Workspace } from "./plugins/types.js";
+import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { bootId } from "./proc.js";
 import { heartbeatPath, loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate, type TemplateVars } from "./template.js";
@@ -20,22 +20,6 @@ type Loop = { round: number; feedback: string };
 const OUTPUT_LIMIT = 8000;
 /** How often a runner writes its heartbeat file (never the run record). */
 export const HEARTBEAT_MS = 5_000;
-
-/** Steps that write and may run at the same time as another writer → child worktrees. */
-export function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | undefined): Set<string> {
-  const writes = (s: StepDef, seen: Set<string>): boolean => {
-    if (s.writes) return true;
-    const j = s.jill && !seen.has(s.jill) ? lookup(s.jill) : undefined;
-    return !!j && j.steps.some((x) => writes(x, seen.add(j.name)));
-  };
-  const writers = jill.steps.filter((s) => writes(s, new Set()));
-  const out = new Set<string>();
-  for (const w of writers) {
-    if (w.copies > 1) out.add(w.name);
-    for (const o of writers) if (o !== w && !ancestors(jill.steps, w.name).has(o.name) && !ancestors(jill.steps, o.name).has(w.name)) out.add(w.name);
-  }
-  return out;
-}
 
 /**
  * One step's command, shared by real and dry runs: the runner that claims it,
@@ -89,8 +73,12 @@ export class RunEngine {
   /** The state this runner last wrote; an observer's terminal state on disk is never overwritten. */
   private written: RunState = "queued";
   private lost = false;
-  /** `<prefix><step>` reset by a back-arrow while running: its result is dropped when it ends. */
+  /** `<prefix><step>` a back-arrow reset while it ran: it is stopped, its writes dropped, its result ignored. */
   private stale = new Set<string>();
+  /** Per step instance (key): stops just that step (stale), linked to the run's abort. */
+  private live = new Map<string, AbortController>();
+  /** True for a stale step id itself, its copies and rounds (`#`, `@`) and its nested steps (`/`). */
+  private isStale = (key: string) => [...this.stale].some((id) => key.startsWith(id) && /^($|[#@/])/.test(key.slice(id.length)));
 
   constructor(
     private record: RunRecord,
@@ -189,14 +177,21 @@ export class RunEngine {
 
   private async runGraph(f: Frame): Promise<Outcome> {
     const { jill, ws } = f;
-    const parallel = ws.isolated ? parallelWriters(jill, this.o.lookup) : new Set<string>();
+    const parallel = (ws.isolated && this.isolation?.parallel?.(jill, this.o.lookup)) || new Set<string>();
     const state = new Map(jill.steps.map((s) => [s.name, "pending" as "pending" | "running" | "done" | "failed"]));
     const outputs: Outputs = {};
     const running = new Map<string, Promise<void>>();
     const [rounds, loops] = [new Map<string, number>(), new Map<string, number>()]; // starts per step; back-arrows taken per failing step
     let feedback = "";
+    /** A back-arrow waiting for its stale steps to stop: the steps to rerun, whether stale writes hit the shared worktree, the merge step's base. */
+    let back: { steps: string[]; discard: boolean; base?: string } | undefined;
     for (;;) {
-      for (const s of this.outcome ? [] : jill.steps) {
+      if (back && !back.steps.some((n) => running.has(n))) {
+        if (ws.isolated && this.isolation?.retry) feedback = (await this.isolation.retry(ws, back)) + feedback;
+        for (const n of back.steps) (state.set(n, "pending"), this.stale.delete(f.prefix + n));
+        back = undefined;
+      }
+      for (const s of this.outcome || back || this.isStale(f.prefix) ? [] : jill.steps) {
         if (state.get(s.name) !== "pending" || !s.needs.every((n) => state.get(n) === "done")) continue;
         state.set(s.name, "running");
         const round = (rounds.get(s.name) ?? 0) + 1;
@@ -205,11 +200,8 @@ export class RunEngine {
         const copies = Array.from({ length: s.copies }, (_, i) => this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop));
         const p = Promise.all(copies).then((res) => {
           running.delete(s.name);
-          // Stale: a back-arrow reset this step while it ran; drop its result and run it again.
-          if (this.stale.delete(f.prefix + s.name)) {
-            for (const x of res) Object.assign(this.record.steps[x.key]!, { state: "skipped", reason: "stale: a back-arrow reran an earlier step" });
-            return void state.set(s.name, "pending");
-          }
+          if (back?.steps.includes(s.name)) // stale: its result is dropped and it runs again
+            return void res.forEach((x) => Object.assign(this.record.steps[x.key]!, { state: "skipped", reason: "stale: a back-arrow reran an earlier step" }));
           outputs[s.name] = { output: res.map((x) => x.output).filter(Boolean).join("\n\n---\n\n") };
           const bad = res.find((x) => !x.ok);
           state.set(s.name, bad ? "failed" : "done");
@@ -219,15 +211,16 @@ export class RunEngine {
           if (n >= s.onFail.maxRounds) return this.halt("needs-you", `${f.prefix}${s.name} failed ${n} rounds`);
           loops.set(s.name, n);
           feedback = bad.output;
-          const back = s.onFail.backTo;
-          for (const x of jill.steps.filter((x) => x.name === back || ancestors(jill.steps, x.name).has(back)))
-            if (state.get(x.name) === "running") this.stale.add(f.prefix + x.name);
-            else state.set(x.name, "pending");
+          const steps = jill.steps.filter((x) => x.name === s.onFail!.backTo || ancestors(jill.steps, x.name).has(s.onFail!.backTo)).map((x) => x.name);
+          const busy = steps.filter((x) => running.has(x));
+          back = { steps: [...new Set([...(back?.steps ?? []), ...steps])], discard: !!back?.discard || busy.some((x) => !parallel.has(x)), base: s.merges ? this.record.base : back?.base };
+          for (const x of busy) this.stale.add(f.prefix + x);
+          for (const [k, ac] of this.live) if (this.isStale(k)) ac.abort("stale");
         });
         running.set(s.name, p);
       }
-      if (running.size === 0) break;
-      await Promise.race(running.values());
+      if (running.size === 0 && !back) break;
+      if (running.size) await Promise.race(running.values());
     }
     return this.outcome ?? ([...state.values()].every((v) => v === "done") ? "done" : "failed");
   }
@@ -237,13 +230,15 @@ export class RunEngine {
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}${loop.round > 1 ? `@${loop.round}` : ""}`;
     const rec: StepRecord = { key, step: step.name, jill: jill.name, copy, kind: step.jill ? "jill" : step.agent ? "agent" : "run", state: "skipped" };
     this.record.steps[key] = rec;
-    if (this.outcome) return { ok: false, output: "", key };
+    const ac = new AbortController();
+    this.live.set(key, ac);
+    if (this.outcome || this.isStale(key)) return { ok: false, output: "", key };
     Object.assign(rec, { state: "running", started: now() });
     this.emit("step-started", key);
     /** End this step without success; halt = stop the whole run with that outcome (else its output tail is the feedback). */
     const fail = (state: "failed" | "stuck" | "needs-you", reason: string, halt = true) => {
       Object.assign(rec, { state, reason, finished: now() });
-      halt &&= !this.stale.has(prefix + step.name); // a stale step's result is dropped, never stops the run
+      halt &&= !this.isStale(key); // a stale step's result is dropped, never stops the run
       if (halt) this.halt(state, `step ${key}: ${reason}`);
       this.emit("step-done", key, `${state}: ${reason}`);
       return { ok: false, output: halt ? "" : readOutput(rec.log), key };
@@ -265,7 +260,7 @@ export class RunEngine {
         if (!cmd.runner) return fail("failed", "no runner plug-in can run this step");
         // merges: true — the isolation plug-in refuses a dirty or switched checkout, then judges the result; a bad result never loops.
         const base = this.record.base ?? "";
-        let start: MergeStart | undefined;
+        let start: object | undefined;
         if (step.merges) {
           if (!iso?.mergeStart || !iso.mergeCheck || !iws.isolated || !base) return fail("failed", "merges: true needs a worktree run started on a branch");
           rec.commit = (await iso.commit(iws, `jills(${jill.name}): ${key} (before merging)`)) ?? rec.commit;
@@ -277,9 +272,10 @@ export class RunEngine {
         const logPath = join(this.record.logDir, `${key.replace(/[^A-Za-z0-9_.#@-]/g, "_")}.log`);
         rec.log = logPath;
         this.save();
-        const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: this.abort.signal, env: cmd.env, config: this.o.config });
+        const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: AbortSignal.any([this.abort.signal, ac.signal]), env: cmd.env, config: this.o.config });
         rec.exitCode = res.exitCode;
         const merged = start && (await iso!.mergeCheck!(iws, base, start));
+        if (merged && merged.state !== "untouched" && this.outcome) this.record.error = `merge step: ${merged.reason ?? `merged into ${base}`}; ${this.record.error}`;
         if (merged && merged.state === "bad") return fail("needs-you", `the merge step left your checkout modified: ${merged.reason}`);
         for (const cn of ["exit-code", "verdict", ...(Array.isArray(step.extra.checks) ? step.extra.checks.map(String) : [])]) {
           const c = this.o.plugins.checks.get(cn);
@@ -294,6 +290,7 @@ export class RunEngine {
         if (merged && merged.state === "untouched") return fail("failed", `nothing was merged into ${base}`, !step.onFail);
         output = readOutput(logPath);
       }
+      if (this.isStale(key)) return fail("failed", "stale: a back-arrow reran an earlier step", false); // never committed or merged back
       // Git stays outside agents: Jills commits after each writing step.
       if (iws.isolated && iso && step.writes && !step.jill) rec.commit = (await iso.commit(iws, `jills(${jill.name}): ${key}`)) ?? rec.commit;
       if (iws !== ws && iso) {

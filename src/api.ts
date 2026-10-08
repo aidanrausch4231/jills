@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:f
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
-import { nestedInputs, parallelWriters, RunEngine, stepCommand, type EventListener } from "./engine.js";
+import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
 import { withJevKey } from "./plugins/matcher-jev.js";
@@ -274,7 +274,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
  * placeholder run id and workspace. `error` is set when no runner can run a step.
  */
 function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, jill = root, indent = ""): Generator<{ line: string; error?: string }> {
-  const par = root.worktree ? parallelWriters(jill, c.lookup) : new Set<string>();
+  const par = (root.worktree && c.plugins.isolation.get(root.box ?? "worktree")?.parallel?.(jill, c.lookup)) || new Set<string>();
   for (const s of jill.steps) {
     const loop = s.onFail ? `on fail back to ${s.onFail.backTo}, max ${s.onFail.maxRounds} rounds` : "";
     const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);

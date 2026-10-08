@@ -116,17 +116,67 @@ test("a merge step that fails or merges nothing with the checkout untouched take
   assert.equal(status(repo), "");
 });
 
-test("a squash conflict, cleaned up with git reset --merge, takes the back-arrow (the documented procedure)", async () => {
+test("N4: a squash conflict goes back to build with the base merged in; the builder resolves it", async () => {
   const home = tmpHome();
   const repo = tmpRepo();
   const userEdit = `[ {{round}} != 1 ] || { cd "${repo}" && echo user > base.txt && git ${ID} commit -qam user; }`;
-  writeJill(home, "clash", jill(`cd "$JILLS_BASE_REPO" && { git merge --squash "$JILLS_RUN_BRANCH" || { git reset --merge; exit 1; }; } && git ${ID} commit -qm sq`, "\n    on_fail: {back_to: build, max_rounds: 2}", `echo built > "$JILLS_WORKSPACE/base.txt"; ${userEdit}`));
+  const build = `printf "%s" "{{feedback}}" > "$JILLS_WORKSPACE/../fb-{{round}}.txt"; echo built{{round}} > "$JILLS_WORKSPACE/base.txt"; ${userEdit}`;
+  writeJill(home, "clash", jill(`cd "$JILLS_BASE_REPO" && { git merge --squash "$JILLS_RUN_BRANCH" || { git reset -q --merge; exit 1; }; } && git ${ID} commit -qm sq`, "\n    on_fail: {back_to: build, max_rounds: 3}", build));
   const r = await runNow("clash", { home, cwd: repo });
-  assert.equal(r.state, "needs-you");
-  assert.match(r.error!, /merge failed 2 rounds/);
-  assert.ok(r.steps["build@2"]);
+  assert.equal(r.state, "done", r.error);
+  assert.ok(r.steps["merge@2"]);
+  const fb = readFileSync(join(r.workspace!, "..", "fb-2.txt"), "utf8");
+  assert.match(fb, /Resolve these merge conflicts with main .*: base\.txt/);
+  // build@2's commit completes the merge of main into the run branch
+  assert.equal(git(repo, "rev-list", "--parents", "-n", "1", r.steps["build@2"]!.commit!).split(" ").length, 3);
+  assert.equal(readFileSync(join(repo, "base.txt"), "utf8"), "built2\n");
+  assert.equal(git(repo, "log", "-1", "--format=%s", "main^"), "user");
   assert.equal(status(repo), "");
-  assert.equal(readFileSync(join(repo, "base.txt"), "utf8"), "user\n");
+});
+
+test("N3: untracked files the run would overwrite -> needs-you, nothing merged, no loop", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  writeFileSync(join(repo, "new.txt"), "user's untracked work\n");
+  writeJill(home, "ut", jill(SQUASH, "\n    on_fail: {back_to: build, max_rounds: 2}"));
+  const r = await runNow("ut", { home, cwd: repo });
+  assert.equal(r.state, "needs-you");
+  assert.match(r.error!, /untracked files in your checkout .* would be overwritten by the merge: new\.txt/);
+  assert.equal(r.steps.merge!.log, undefined);
+  assert.equal(r.steps["build@2"], undefined);
+  assert.equal(readFileSync(join(repo, "new.txt"), "utf8"), "user's untracked work\n");
+});
+
+test("N5: a merge step that moves another branch or removes untracked files -> needs-you", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  git(repo, "branch", "other");
+  writeJill(home, "br", jill(`${SQUASH} && git branch -f other "$JILLS_RUN_BRANCH"`));
+  const r = await runNow("br", { home, cwd: repo });
+  assert.equal(r.state, "needs-you");
+  assert.match(r.error!, /changed other branches or tags/);
+
+  const repo2 = tmpRepo();
+  writeFileSync(join(repo2, "notes.txt"), "precious\n");
+  writeJill(home, "cl", jill(`${SQUASH} && git clean -fdq`));
+  const c = await runNow("cl", { home, cwd: repo2 });
+  assert.equal(c.state, "needs-you");
+  assert.match(c.error!, /changed untracked files/);
+
+  // untracked files that stay put are fine
+  const repo3 = tmpRepo();
+  writeFileSync(join(repo3, "notes.txt"), "precious\n");
+  writeJill(home, "ok", jill(SQUASH));
+  assert.equal((await runNow("ok", { home, cwd: repo3 })).state, "done");
+});
+
+test("N6: the run timing out after the merge commit still says the merge happened", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  writeJill(home, "tl", `timeout: 3s\n${jill(`${SQUASH} && sleep 10`)}`);
+  const r = await runNow("tl", { home, cwd: repo });
+  assert.equal(r.state, "stuck");
+  assert.match(r.error!, /^merge step: merged into main; total time limit/);
 });
 
 test("dirty or switched user checkout -> needs-you, the merge step never runs", async () => {
@@ -154,6 +204,7 @@ test("R2: merges: true must be the single final step of the outermost Jill", asy
   const p = (steps: string, wt = "") => () => parseJill(`---\nname: m\n${wt}steps:\n${steps}\n---\n`);
   assert.throws(p("  a: {run: x, merges: true}", "worktree: false\n"), /merges: true needs worktree: true/);
   assert.throws(p("  a: {jill: x, merges: true}"), /merges: true needs an agent: or run: step/);
+  assert.throws(p("  a: {run: x, merges: true, writes: true}"), /without writes: true/); // N7
   assert.throws(p("  b: {run: x}\n  m: {run: y, needs: [b], merges: true}\n  docs: {run: z, needs: [m]}"), /must be the single final step/);
   assert.throws(p("  b: {run: x}\n  side: {run: s}\n  m: {run: y, needs: [b], merges: true}"), /must be the single final step/);
   assert.throws(p("  b: {run: x}\n  m: {run: y, needs: [b], merges: true, copies: 2}"), /must be the single final step/);

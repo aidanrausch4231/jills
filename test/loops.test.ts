@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { check, dryRun, runNow } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
 import verdictCheck from "../src/plugins/check-verdict.js";
 import { renderTemplate } from "../src/template.js";
-import { tmp, tmpHome, writeJill } from "./helpers.js";
+import { git, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
 // review fails until its counter file reaches `passAt`; the output names the round.
 const review = (passAt: number, extra = "") => `
@@ -153,6 +153,67 @@ steps:
   const r = await runNow("sibfail", { home, cwd: tmp() });
   assert.equal(r.state, "done", r.error);
   assert.equal(r.steps.test!.state, "skipped");
-  assert.equal(r.steps.test!.exitCode, 1, "round 1 of test really failed");
+  assert.notEqual(r.steps.test!.exitCode, 0, "round 1 of test was stopped");
   assert.equal(r.steps["test@2"]!.state, "done");
+});
+
+test("N1: a stale writer is stopped and its writes never reach the run branch (shared worktree)", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  writeJill(home, "stw", `steps:
+  build: {run: 'echo {{round}} > b.txt; sleep 1', writes: true}
+  review: {run: '[ "$(cat b.txt)" = 2 ] || { echo fail; exit 1; }', needs: [build], on_fail: {back_to: build}}
+  slow: {run: 'r={{round}}; echo started > started-$r.txt; sleep 3; echo "stale from round $r" > slow-$r.txt', needs: [build], writes: true}`);
+  const t0 = Date.now();
+  const r = await runNow("stw", { home, cwd: repo });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps.slow!.state, "skipped");
+  assert.ok(Date.now() - t0 < 9000, "the stale step was stopped, not waited out");
+  const files = git(repo, "ls-tree", "--name-only", r.branch!).split("\n");
+  assert.ok(!files.includes("slow-1.txt") && !files.includes("started-1.txt"), files.join(" "));
+  assert.ok(files.includes("slow-2.txt"));
+  assert.equal(existsSync(join(r.workspace!, "started-1.txt")), false, "stale writes were cleaned from the worktree");
+});
+
+test("N1b: a stale writer never commits a newer round's edit under its own name", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  writeJill(home, "stw", `steps:
+  build: {run: 'echo {{round}} > b.txt; [ {{round}} = 2 ] && sleep 2; true', writes: true}
+  review: {run: '[ "$(cat b.txt)" = 2 ] || exit 1', needs: [build], on_fail: {back_to: build}}
+  slow: {run: 'sleep 1.5; echo s > slow.txt', needs: [build], writes: true}`);
+  const r = await runNow("stw", { home, cwd: repo });
+  assert.equal(r.state, "done", r.error);
+  const log = git(repo, "log", "--format=%s", `main..${r.branch}`).split("\n");
+  assert.deepEqual(log, ["jills(stw): slow@2", "jills(stw): build@2", "jills(stw): build"]);
+  assert.equal(git(repo, "show", "--name-only", "--format=", `${r.branch}`), "slow.txt");
+});
+
+test("N1c: a stale parallel writer's child worktree is never merged back", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  writeJill(home, "stc", `steps:
+  build: {run: 'echo {{round}} > b.txt', writes: true}
+  review: {run: '[ "$(cat b.txt)" = 2 ] || exit 1', needs: [build], on_fail: {back_to: build}}
+  w: {run: 'sleep 1; echo w{{round}}-{{copy}} > w-{{round}}-{{copy}}.txt', needs: [build], writes: true, copies: 2}`);
+  const r = await runNow("stc", { home, cwd: repo });
+  assert.equal(r.state, "done", r.error);
+  const files = git(repo, "ls-tree", "--name-only", r.branch!).split("\n");
+  assert.ok(!files.some((f) => f.startsWith("w-1-")), files.join(" "));
+  assert.ok(files.includes("w-2-1.txt") && files.includes("w-2-2.txt"), files.join(" "));
+});
+
+test("N2: a nested Jill sibling under a stale step is stopped and dropped, never stops the run", async () => {
+  const home = tmpHome();
+  writeJill(home, "chk", `worktree: false\nsteps:\n  t: {run: 'v=$(cat b.txt); sleep 1; [ "$v" = 2 ]'}\n  u: {run: 'touch u-ran', needs: [t]}`);
+  writeJill(home, "nst", `worktree: false
+steps:
+  build: {run: 'echo {{round}} > b.txt'}
+  review: {run: '[ "$(cat b.txt)" = 2 ] || { echo fail; exit 1; }', needs: [build], on_fail: {back_to: build}}
+  sib: {jill: chk, needs: [build]}`);
+  const r = await runNow("nst", { home, cwd: tmp() });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps.sib!.state, "skipped");
+  assert.equal(r.steps["sib/u"], undefined, "nothing new starts inside a stale nested Jill");
+  assert.equal(r.steps["sib@2/t"]!.state, "done");
 });

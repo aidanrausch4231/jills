@@ -164,9 +164,13 @@ review:
   step's output (empty in round 1).
 - Every round stays in the run record: `build`, `build@2`, `build@3`, ... (`jills status` lists
   them, each with its log).
-- A step that the loop resets while it is still running (a sibling that also needs `back_to`) is
-  stale: when it ends, its result is dropped (record state `skipped`, even if it failed) and it
-  runs again in the new round.
+- A step that the loop resets while it is still running (a sibling that also needs `back_to`, or
+  any step inside such a nested Jill) is stale: Jills stops it like a timeout (SIGTERM, then
+  SIGKILL to its process group) and waits for it to exit. Its result is dropped (record state
+  `skipped`, even if it failed), its writes are never committed, a stale writer's child worktree is
+  never merged back, and when a stale step ran in the shared run worktree Jills resets that
+  worktree to its last commit (`git reset --hard` + `git clean -fd`, in the run worktree only)
+  before `back_to` starts. Then it runs again in the new round.
 - Timeouts, `jills stop` and a stopped run never loop; they end the run as before. A step without
   `on_fail` still stops the run at its first failure.
 - `verdict: true` (built-in `verdict` check, runs for every step): the step fails unless the last
@@ -176,16 +180,18 @@ review:
 ### Merging
 
 Only a step with `merges: true` may merge. It must be the single final step of the outermost Jill
-(every other step comes before it), an `agent:` or `run:` step without `copies`, in a Jill with
-`worktree: true`; anything else is a parse error, and a nested Jill with a merge step is refused. `jills check` notes such a step; the Pi and dsh suggestion says "merges into <branch>
+(every other step comes before it), an `agent:` or `run:` step without `copies` or `writes: true`,
+in a Jill with `worktree: true`; anything else is a parse error, and a nested Jill with a merge
+step is refused. `jills check` notes such a step; the Pi and dsh suggestion says "merges into <branch>
 when done". The run records the branch your checkout was on when the run started (`base` in the run
 record). Example: [`examples/fix-jill-bug`](examples/fix-jill-bug/JILL.md) with the
 [`squash-merge`](examples/agents/squash-merge.md) agent.
 
 - Before the step runs, Jills commits pending worktree changes, then checks your checkout. When it
-  has uncommitted changes to tracked files, or is on another branch, the step does not run and the
-  run ends `needs-you` ("your checkout ... has uncommitted changes" / "is on another branch"). That
-  is not a step failure: no back-arrow. Jills records the base tip and the run commit at this point.
+  has uncommitted changes to tracked files, is on another branch, or has untracked files that the
+  run adds (the merge would overwrite them; they are named), the step does not run and the run
+  ends `needs-you`. That is not a step failure: no back-arrow. Jills records the base tip, the run
+  commit, your branches and tags, and your untracked files at this point.
 - Only this step gets `JILLS_BASE_REPO` (your checkout), `JILLS_BASE_BRANCH` (the branch the run
   started from) and `JILLS_RUN_BRANCH`. The runner removes them from its own environment, so no
   other step sees them.
@@ -199,14 +205,21 @@ record). Example: [`examples/fix-jill-bug`](examples/fix-jill-bug/JILL.md) with 
   ```
 
 - Afterwards Jills judges the result itself (core calls the worktree plug-in's `mergeCheck`); it
-  never trusts the agent. The merge counts only when the run branch is unchanged, your checkout is
+  never trusts the agent. The merge counts only when the run branch, your other branches and tags
+  and your untracked files are unchanged, your checkout is
   clean, on `JILLS_BASE_BRANCH` at its new tip, and that branch gained exactly one new commit on its
   old tip whose tree equals `git merge-tree --write-tree <old tip> <run commit>` (the run tree when
   your branch had not moved), or when there was nothing to merge.
 - The step fails and may take its back-arrow only while everything is untouched (non-zero exit,
-  or nothing merged). In any other case (run branch changed, checkout dirty or elsewhere, two
-  commits, a different tree, a failure after merging) the run ends `needs-you` with no loop:
-  check your branch by hand.
+  or nothing merged). Before `back_to` reruns, Jills merges the base tip into the run branch in the
+  run worktree (`git merge --no-commit <base>`). Conflicts stay in the worktree and `{{feedback}}`
+  starts with "Resolve these merge conflicts with <base> ...: <files>"; the builder resolves them
+  and Jills' normal commit after the step records the merge (a merge commit with both parents),
+  so the next squash applies cleanly.
+- In any other case (run branch, other branches, tags or untracked files changed, checkout dirty or
+  elsewhere, two commits, a different tree, a failure after merging) the run ends `needs-you` with
+  no loop: check your branch by hand. When the run also times out or stops, its error still starts
+  with what the merge step did ("merge step: merged into main; ..." or the reason).
 - Records: `$JILLS_HOME/runs/<id>.json` (atomic writes) and per-step logs in `$JILLS_HOME/runs/<id>/`.
 - No background service: `jills start` spawns a detached runner process and exits.
 
@@ -260,7 +273,7 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 // runner: the first whose canRun(step) is true runs the step; describe() serves dry runs and `jills check`.
 { slot: "runner", canRun(step): boolean; describe(ctx): string; run(ctx: StepRunContext): Promise<StepRunResult>; check?(config): { errors; warnings } }
 // isolation: picked by `box: <name>` (default "worktree"); child/mergeBack serve parallel writers.
-{ slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg); mergeStart?(ws, base); mergeCheck?(ws, base, start) /* needed by merges: true */ }
+{ slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg); parallel?(jill, lookup): Set<string> /* steps that get a child workspace */; mergeStart?(ws, base); mergeCheck?(ws, base, start) /* merges: true */; retry?(ws, { discard, base }) /* before a back-arrow */ }
 // check: named in a step's `checks: [...]` (exit-code, then verdict, always run first).
 { slot: "check", check({ step, result, logPath }): Promise<{ ok: boolean; reason?: string }> }
 // hook: sees every run event (started, step-started, step-done, finished, failed, stuck, needs-you); errors are ignored.

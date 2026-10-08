@@ -83,7 +83,7 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
   if (s.inputs !== undefined && !isMap(s.inputs)) errs.push(`step ${name}: inputs must be a map`);
   const of = s.on_fail, rounds = isMap(of) && of.max_rounds !== undefined ? Number(of.max_rounds) : 3;
   const onFail = isMap(of) && typeof of.back_to === "string" && Number.isInteger(rounds) && rounds >= 1 ? { backTo: of.back_to, maxRounds: Math.min(rounds, MAX_ROUNDS) } : undefined;
-  if (s.merges === true && s.jill !== undefined) errs.push(`step ${name}: merges: true needs an agent: or run: step`);
+  if (s.merges === true && (s.jill !== undefined || s.writes === true)) errs.push(`step ${name}: merges: true needs an agent: or run: step without writes: true`);
   if (of !== undefined && !onFail) errs.push(`step ${name}: on_fail must be { back_to: <step>, max_rounds: 1..${MAX_ROUNDS} }`);
   return {
     name,
