@@ -28,7 +28,7 @@ export const HEARTBEAT_MS = 5_000;
  */
 type StepCtx = { config: JillsConfig; plugins: PluginSet; runId: string; key: string; cwd: string; copy?: number; steps: Outputs; loop?: Loop };
 export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string, string>, c: StepCtx) {
-  const runner: RunnerPlugin | undefined = c.plugins.runners.find((p) => p.canRun(step));
+  const runner: RunnerPlugin | undefined = c.plugins.runners.find((p) => p.canRun(step, c.config));
   const vars = { inputs, task: inputs.task, copy: c.copy, run_id: c.runId, steps: c.steps, ...c.loop };
   const shell = step.run !== undefined ? renderShellTemplate(step.run, vars) : undefined;
   const text = shell ? shell.text : renderTemplate(step.task ?? "{{task}}", vars);

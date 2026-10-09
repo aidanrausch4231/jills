@@ -54,7 +54,7 @@ export interface RunnerPlugin {
   slot: "runner";
   apiVersion: 1;
   name: string;
-  canRun(step: StepDef): boolean;
+  canRun(step: StepDef, config?: JillsConfig): boolean; // config is optional: older plug-ins read only the step
   /** Describe what would run, for dry runs and `jills check` (throw for a step it cannot run). */
   describe(ctx: Omit<StepRunContext, "signal" | "logPath">): string;
   run(ctx: StepRunContext): Promise<StepRunResult>;

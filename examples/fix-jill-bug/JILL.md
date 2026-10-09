@@ -16,7 +16,8 @@ steps:
       task: "Find the cause of this bug: {{inputs.task}}"
   build:
     agent: harness-implementer
-    model: anthropic/claude-opus-5-5
+    cli: claude
+    model: claude-opus-5-5
     needs: [research]
     writes: true
     timeout: 45m

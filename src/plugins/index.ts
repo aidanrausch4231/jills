@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import type { JillsConfig } from "../config.js";
 import agentRunner from "./runner-agent.js";
+import claudeRunner from "./runner-claude.js";
 import commandRunner from "./runner-command.js";
 import exitCodeCheck from "./check-exit-code.js";
 import verdictCheck from "./check-verdict.js";
@@ -26,7 +27,7 @@ export interface PluginSet {
 export function builtinPlugins(): PluginSet {
   return {
     matchers: [jevMatcher, keywordsMatcher],
-    runners: [commandRunner, agentRunner],
+    runners: [commandRunner, claudeRunner, agentRunner],
     isolation: new Map([[worktreeIsolation.name, worktreeIsolation]]),
     checks: new Map([exitCodeCheck, verdictCheck].map((c) => [c.name, c])),
     hooks: [],

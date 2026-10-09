@@ -43,8 +43,8 @@ Jills follows the same rules:
 ## Layout
 
 - `src/` — core library and CLI (`jills ...`).
-- `src/plugins/` — built-in plug-ins (Jev and keyword matchers, command and agent
-  runners, worktree isolation, exit-code and verdict checks, default suggest/anti-nag) and the plug-in interface.
+- `src/plugins/` — built-in plug-ins (Jev and keyword matchers, command, Pi agent
+  and Claude Code agent runners, worktree isolation, exit-code and verdict checks, default suggest/anti-nag) and the plug-in interface.
 - `addons/` — one folder per harness: `mcp/` (any MCP client, served by `jills mcp`), `pi/`,
   `dsh/` (v1); `claude-code/` (v2).
 - `examples/` — example Jills.

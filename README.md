@@ -49,8 +49,10 @@ jev:
   model: typesafe/jev-router    # OpenRouter model
   key_env: OPENROUTER_API_KEY   # fallback env var (and dsh credential ref) for the key; never logged
   threshold: 0.7                # suggest only when confidence >= threshold
-agent_cli: pi                   # pi (v1); other agent CLIs are add-ons
+agent_cli: pi                   # pi or claude (Claude Code runner); other agent CLIs are add-ons
 # agent_bin: /path/to/pi        # optional binary override
+# claude_bin: /path/to/claude   # Claude Code runner: optional binary override
+# claude_default_model: claude-opus-5-5  # replaces default_model for claude steps
 tiers: { spinsoft: openrouter/some-cheap-model }
 default_model: openai-codex/gpt-5.6-sol
 # plugins: [~/.jills/plugins/my-runner.js]
@@ -109,8 +111,26 @@ Agent files are markdown with front matter `name`, `description`, `tools`, `mode
 body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier] ?? default_model`.
 
 - pi: `pi -p --model M --append-system-prompt <instructions file> --tools read,grep -- "<task>"`
-- Other agent CLIs (Claude Code, Codex) are v2 runner plug-ins. `jills check` asks each runner to
-  describe every step, so an unknown agent is an error before anything runs.
+- claude: see "Claude Code runner" below. Other agent CLIs (Codex) are v2 runner plug-ins.
+  `jills check` asks each runner to describe every step, so an unknown agent is an error before anything runs.
+
+### Claude Code runner
+
+`src/plugins/runner-claude.ts` runs an agent step on Claude Code when the step's CLI is `claude`:
+step `cli: claude`, else the agent file's `cli:`, else config `agent_cli`. It needs `claude`
+installed and logged in; it uses your Claude plan through claude's own login (Jills passes no
+credentials and never reads `~/.claude`). It runs
+`claude -p --model M --append-system-prompt <instructions> --permission-mode P --tools T --allowedTools A --output-format text -- "<task>"`.
+
+- Model: `step.model ?? agent.model ?? tiers[tier] ?? claude_default_model` (default
+  `claude-opus-5-5`); a leading `anthropic/` is dropped.
+- Tools: agent `tools:` map read→Read, grep→Grep, find/ls→Glob, write→Write, edit→Edit, bash→Bash
+  (no `tools:` = read, grep, find, ls, plus write, edit for writers). Another name is a `jills check` error.
+- Permissions: a `writes: true` step gets `acceptEdits`; any other step gets no Write/Edit tools at all
+  and the ask-first mode (`manual`). Never `bypassPermissions`. In print mode an action nobody approved
+  is denied, so the agent must pre-approve what it needs: Bash is available only when `tools:` lists
+  `bash`, and runs only commands named in the agent file's `claude_tools:` (passed verbatim as
+  `--allowedTools`, e.g. `[Read, Grep, "Bash(pnpm test:*)"]`).
 
 ### How a run works
 
