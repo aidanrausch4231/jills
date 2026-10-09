@@ -126,6 +126,16 @@ export function giveUpMs(jevTimeoutMs, envValue = process.env.JILLS_HOOK_TIMEOUT
   return asked > floor ? asked : floor;
 }
 
+/** The configured Jev request timeout: plug-in settings live under the raw config (`jev.timeout_ms`). */
+export function jevTimeoutMs(lib) {
+  try {
+    return lib.loadConfig().raw?.jev?.timeout_ms;
+  } catch (e) {
+    debug(`config: ${e?.message ?? e}`);
+    return undefined;
+  }
+}
+
 function withTimeout(p, ms) {
   let t;
   const timer = new Promise((_, rej) => {
@@ -146,17 +156,12 @@ export async function run(raw) {
   const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
   const cwd = typeof input?.cwd === "string" && input.cwd ? input.cwd : undefined;
   if (!session || !prompt) return undefined;
-  // Slash commands (including /jills itself) and shell escapes are not tasks for Jev.
-  if (prompt.startsWith("/") || prompt.startsWith("!")) return undefined;
+  // Slash commands (including /jills itself), shell escapes and system events such as
+  // <task-notification> are not tasks for Jev.
+  if (/^[/!<]/.test(prompt)) return undefined;
   const lib = await loadLib();
   const recent = recentTurns(input.transcript_path);
-  let jevMs;
-  try {
-    jevMs = lib.loadConfig().jev.timeout_ms;
-  } catch (e) {
-    debug(`config: ${e?.message ?? e}`);
-  }
-  const ms = giveUpMs(jevMs);
+  const ms = giveUpMs(jevTimeoutMs(lib));
   const s = await withTimeout(lib.suggest({ session, message: prompt, recent, cwd }), ms);
   if (s.action !== "suggest") debug(`quiet: ${s.reason}`);
   return hookOutput(s, session, cwd);

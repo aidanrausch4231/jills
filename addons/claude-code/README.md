@@ -3,6 +3,42 @@
 > **v2 — not part of the v1 install.** Jills v1 targets Pi and DeepSeek Harness. This add-on's code
 > and tests stay here (run them with root `pnpm test:v2`; they are not in the v1 `pnpm test` gate), but do not install it for v1.
 
+**In Claude Code ≥ 2.1.287 install the mod instead of the settings hook; keep the /jills command and MCP server.**
+With both installed, every prompt gets two suggestions.
+
+## Mod (`mod/jills/`, Claude Code ≥ 2.1.287)
+
+A Claude Code mod (a plugin with a function-hooks module, early-access API). It calls only the `jills` CLI
+(`$.process.run` with an argv, never a shell) and draws:
+
+- **Suggestion card** above the prompt after each of your prompts (not `/`, `!` or `<...>` system events, and only
+  prompts you typed): `Jill <name> · <description>`, the proposed inputs, warnings (no worktree, merges into a
+  branch) and **Start** (`1`) / **Not this** (`2`) / **Never here** (`3`), which run `jills go`, `jills dismiss` and
+  `jills never`. Digits work from an empty prompt. The next prompt removes the card. In auto mode the run starts without a card.
+- **Progress pane** `jills-run`, opened by Start: Jill, state, elapsed time, one row per step instance in start
+  order (`build@2` shows as "build (round 2)", nested steps indented), merge result, error or needs-you reason,
+  branch, and **Stop** / **Close**. `/jills-panel` reopens it for the latest run of this session.
+- **Status row** `Jills: <jill> · <current step> · <done>/<seen> steps`, then the final word for 60 s.
+- **On end**: a toast `Jill <name> <state>` and the `jills wait` result line (plus the merge note) added to the
+  chat for Claude.
+
+It polls `jills status <run> --json` every 1.5 s while the pane is open and every 5 s while it is closed (the
+status row and the end notice still need it), and stops when the run ends. `<seen>` counts the step instances
+the record has started; the record has no planned total.
+
+Develop and check (from the repo root; nothing is installed):
+
+```sh
+claude --plugin-dir addons/claude-code/mod/jills      # try it in one session, hot reload on save
+claude plugin validate addons/claude-code/mod/jills
+node addons/claude-code/mod/typecheck.mjs              # tsc with the Claude Code API types
+claude plugin test addons/claude-code/mod/jills        # tests/*.test.tsx, every jills call mocked
+```
+
+`pnpm test:mod` runs the three checks. The `jills` CLI must be on the PATH Claude Code starts with (Install step 2).
+
+## Settings hook and slash command (clients without mods)
+
 Three pieces, none with Jills logic of its own:
 
 | File | What it does |
@@ -14,7 +50,7 @@ Three pieces, none with Jills logic of its own:
 Hook contract (checked against code.claude.com/docs/en/hooks, Claude Code 2.1.294): input on stdin
 has `session_id`, `prompt`, `cwd`, `transcript_path`; exit 0 with JSON
 `{"systemMessage": ..., "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ...}}`.
-The hook skips prompts that start with `/` or `!`.
+The hook skips prompts that start with `/`, `!` or `<` (system events such as `<task-notification>`).
 
 ## Modes
 
@@ -33,7 +69,8 @@ The hook skips prompts that start with `/` or `!`.
    `ln -s /home/rausch/harness/v4/personal/jills/dist/src/cli.js ~/.local/bin/jills`
 3. Add the MCP server (for `start_jill` in auto mode):
    `claude mcp add --scope user jills -- node /home/rausch/harness/v4/personal/jills/dist/src/cli.js mcp`
-4. Merge `settings.snippet.json` into `~/.claude/settings.json` (add the entry to any existing
+4. Claude Code ≥ 2.1.287: install the mod (`mod/jills/`) instead of this step. Older clients: merge
+   `settings.snippet.json` into `~/.claude/settings.json` (add the entry to any existing
    `hooks.UserPromptSubmit` list; do not replace other hooks).
 5. Install the slash command:
    `mkdir -p ~/.claude/commands && cp commands/jills.md ~/.claude/commands/jills.md`
@@ -47,5 +84,5 @@ Env knobs: `JILLS_HOME` (default `~/.jills`), `JILLS_LIB` (core entry, default `
 ## Test
 
 `node --test 'addons/claude-code/test/*.test.mjs'` (after `pnpm build`). Tests use a temp `JILLS_HOME`, no network,
-and cover: no match, manual suggestion, auto mode, quiet mode, slash prompts, bad input, transcript turns,
-the give-up time staying above the Jev timeout (with a slow local mock Jev). Root `pnpm test:v2` runs them.
+and cover: no match, manual suggestion, auto mode, quiet mode, slash, `!` and `<...>` prompts, bad input, transcript turns,
+`jev.timeout_ms` read from the config, the give-up time staying above the Jev timeout (with a slow local mock Jev). Root `pnpm test:v2` runs them.

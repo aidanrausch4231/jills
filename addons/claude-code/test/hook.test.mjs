@@ -8,8 +8,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { giveUpMs, hookOutput, HOOK_MARGIN_MS, recentTurns } from "../hook.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { giveUpMs, hookOutput, HOOK_MARGIN_MS, jevTimeoutMs, recentTurns } from "../hook.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "..", "hook.mjs");
@@ -111,9 +111,9 @@ test("quiet mode: no output for this chat, other chats still get suggestions", (
   assert.notEqual(runHook(home, hookInput(repo, "fix the crash bug", "cc-other")).out, "");
 });
 
-test("slash commands, shell escapes, empty and bad input are skipped without error", () => {
+test("slash commands, shell escapes, system events, empty and bad input are skipped without error", () => {
   const { home, repo } = setup();
-  for (const p of ["/jills go", "!git status", "   "]) {
+  for (const p of ["/jills go", "!git status", "   ", "<task-notification>fix the crash bug</task-notification>"]) {
     const r = runHook(home, hookInput(repo, p, "cc-skip"));
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
@@ -158,6 +158,21 @@ test("giveUpMs always exceeds the Jev request timeout", () => {
   assert.equal(giveUpMs(8000, "60000"), 60000, "env can raise it");
   assert.equal(giveUpMs(undefined, ""), 8000 + HOOK_MARGIN_MS);
   for (const jev of [1000, 8000, 30000]) assert.ok(giveUpMs(jev, "1") > jev);
+});
+
+test("jevTimeoutMs reads jev.timeout_ms from the config (plug-in keys live under raw)", async () => {
+  const lib = await import(pathToFileURL(join(HERE, "..", "..", "..", "dist", "src", "index.js")).href);
+  const { home } = setup("jev: {timeout_ms: 20000}\n");
+  const before = process.env.JILLS_HOME;
+  process.env.JILLS_HOME = home;
+  try {
+    assert.equal(jevTimeoutMs(lib), 20000);
+    assert.equal(giveUpMs(jevTimeoutMs(lib), undefined), 20000 + HOOK_MARGIN_MS, "a Jev timeout above 8 s is honoured");
+  } finally {
+    if (before === undefined) delete process.env.JILLS_HOME;
+    else process.env.JILLS_HOME = before;
+  }
+  assert.equal(jevTimeoutMs({ loadConfig: () => { throw new Error("bad yaml"); } }), undefined);
 });
 
 test("a slow Jev reply inside jev.timeout_ms still reaches the user (hook does not give up first)", async () => {
