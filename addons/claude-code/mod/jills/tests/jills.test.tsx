@@ -64,6 +64,7 @@ type World = {
   opened: string[]
   record: object
   suggestion: object
+  listed: object[]
   goFails: boolean
   statusFails: boolean
   slowSuggest: boolean
@@ -80,6 +81,7 @@ function world(on: On, now = T0 + 10_000): World {
     opened: [],
     record: RUNNING,
     suggestion: SUGGESTION,
+    listed: [{ name: 'fix-bug', inputs: ['issue'], required: ['issue'] }],
     goFails: false,
     statusFails: false,
     slowSuggest: false,
@@ -112,6 +114,7 @@ function world(on: On, now = T0 + 10_000): World {
         if (w.slowSuggest) await w.clock.sleep(600_000) // Jev hangs; the test never moves the clock that far
         return ok(w.suggestion)
       case 'go': return w.goFails ? fail('jills: no suggestion to start in this chat\n') : ok({ run: 'r1', jill: 'fix-bug', state: 'queued', record: '/tmp/x' })
+      case 'list': return ok(w.listed)
       case 'status': return w.statusFails ? fail('no run r1') : ok(w.record)
       case 'wait': return ok({ ...w.record, line: `jills run r1 ${(w.record as { state: string }).state}: fix-bug | branch jills/fix-bug-r1` })
       default: return ok({})
@@ -244,8 +247,38 @@ test('a failed start shows a toast and opens nothing', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await ui.press({ key: 'start' })
   expect(w.toasts).toEqual(['Jills: could not start (jills: no suggestion to start in this chat)'])
+  expect(w.statuses.at(-1)).toBe("Jills: couldn't start fix-bug: jills: no suggestion to start in this chat")
   expect(w.opened).toEqual([])
   expect(calls(w, 'status')).toHaveLength(0)
+  expect(await ui.find({ type: 'Text', text: 'Jill fix-bug' })).toBeDefined() // the card stays
+  expect(await ui.find({ type: 'Button', key: 'start' })).toBeDefined()
+  await w.clock.advance(60_000)
+  expect(w.statuses.at(-1)).toBeUndefined()
+})
+
+test('a suggestion without a required input shows what it needs and no Start', async ($, on) => {
+  const w = world(on)
+  w.suggestion = { ...SUGGESTION, inputs: {}, matcher: 'keywords' }
+  w.listed = [{ name: 'fix-bug', inputs: ['issue', 'notes'], required: ['issue'] }]
+  await $.prompt.submit(person('fix the crash'))
+  await w.clock.settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ type: 'Text', text: 'needs: issue — use /jills go issue=value' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'start' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'dismiss' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('auto mode does not start a Jill that still needs an input; it shows the card', async ($, on) => {
+  const w = world(on)
+  w.suggestion = { ...SUGGESTION, inputs: {}, auto: true }
+  await $.prompt.submit(person('fix the crash'))
+  await w.clock.settle()
+  expect(calls(w, 'go')).toHaveLength(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^ *needs: issue/ })).toBeDefined()
 })
 
 /** Suggest, press Start, let the first status poll land. */

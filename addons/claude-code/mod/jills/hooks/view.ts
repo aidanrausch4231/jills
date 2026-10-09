@@ -26,7 +26,7 @@ export function cardFrom(s: Suggestion): JillsCard | null {
   const warnings = (s.warning ?? '').split(';').map(w => w.trim()).filter(Boolean)
   if (s.worktree === false && !warnings.some(w => /worktree/.test(w))) warnings.unshift('no worktree')
   const inputs = Object.entries(s.inputs ?? {}).map(([k, v]): [string, string] => [k, String(v)])
-  return { jill: s.jill, description: s.description ?? '', inputs, warnings }
+  return { jill: s.jill, description: s.description ?? '', inputs, warnings, needs: [] }
 }
 
 /** One line, at most `n` characters. */

@@ -1,7 +1,8 @@
 // The Jills mod's session state ($.state), read by its band and pane.
 
 /** A Jev suggestion shown as the card above the prompt. */
-export type JillsCard = { jill: string; description: string; inputs: [string, string][]; warnings: string[] }
+/** `needs`: required inputs the suggestion left empty; Start is hidden until /jills go gets them. */
+export type JillsCard = { jill: string; description: string; inputs: [string, string][]; warnings: string[]; needs: string[] }
 
 /** One step instance of a run, in start order. `label`: "build (round 2)"; `depth`: nesting. */
 export type JillsStep = { key: string; label: string; depth: number; state: string; reason?: string }

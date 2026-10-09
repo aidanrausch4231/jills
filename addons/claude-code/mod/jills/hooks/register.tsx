@@ -71,23 +71,42 @@ async function suggest($: $, text: string, seq: number) {
   })
   const s = json<Suggestion>(out.stdout)
   if (seq !== live.asked || !s) return
-  const shown = cardFrom(s)
-  if (!shown) return
-  if (s.auto) await start($, true)
+  const found = cardFrom(s)
+  if (!found) return
+  const shown = { ...found, needs: await missingInputs($, found) }
+  if (seq !== live.asked) return
+  if (s.auto && !shown.needs.length) await start($, true, shown.jill)
   else await update($, card, () => shown)
 }
 
+/** Required inputs (no default) of the Jill that the suggestion leaves empty: `jills list --json`. */
+async function missingInputs($: $, c: JillsCard): Promise<string[]> {
+  const out = await jills($, ['list', '--json'])
+  const listed = json<{ name?: string; required?: string[] }[]>(out.stdout)
+  const required = (Array.isArray(listed) ? listed : []).find(j => j.name === c.jill)?.required ?? []
+  const given = new Set(c.inputs.filter(([, v]) => v.trim()).map(([k]) => k))
+  return required.filter(n => !given.has(n))
+}
+
 /** `auto`: started by auto mode, not a press; the pane stays shut (`/jills-panel` opens it). */
-async function start($: $, auto: boolean) {
-  await update($, card, () => null)
+async function start($: $, auto: boolean, name: string) {
   const session = await $.session.id()
   const repo = await $.session.cwd()
   const out = await jills($, ['go', '--session', session, '--repo', repo, '--json'])
   const g = json<{ run?: string; jill?: string; state?: string }>(out.stdout)
   if (out.exitCode !== 0 || !g?.run) {
-    $.ui.toast(`Jills: could not start (${firstLine(out.stderr || out.stdout)})`)
+    // Stays visible: the card keeps its text, and the status row says why for a minute.
+    const why = firstLine(out.stderr || out.stdout)
+    $.ui.toast(`Jills: could not start (${why})`)
+    const token = `start-failed:${await $.clock.now()}`
+    live.statusRun = token
+    $.ui.status(`Jills: couldn't start ${name}: ${why}`)
+    $.clock.after(FINAL_STATUS_MS, () => {
+      if (live.statusRun === token) $.ui.status(undefined)
+    })
     return
   }
+  await update($, card, () => null)
   const id = g.run
   const jill = g.jill ?? '?'
   const first = runView({ id, jill, state: g.state ?? 'queued' }, await $.clock.now())
@@ -203,6 +222,12 @@ export const register: Register = on => {
             {clip(`${k}: ${v}`, width)}
           </Text>
         ))}
+        {shown.needs.length ? (
+          <Text color="warning" wrap="truncate-end" key="needs">
+            {'  '}
+            {clip(`needs: ${shown.needs.join(', ')} — use /jills go ${shown.needs.map(n => `${n}=value`).join(' ')}`, width)}
+          </Text>
+        ) : null}
         {shown.warnings.map(w => (
           <Text color="warning" wrap="truncate-end">
             {'  '}
@@ -212,7 +237,9 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1}>
           {/* Letter hotkeys only: they press while the band holds the focus (ctrl+x tab or a click).
               A digit would also fire from an empty prompt, so "1. fix ..." could press Start. */}
-          <Button key="start" label="Start" hotkey="s" variant="primary" onPress={() => start($, false)} />
+          {shown.needs.length ? null : (
+            <Button key="start" label="Start" hotkey="s" variant="primary" onPress={() => start($, false, shown.jill)} />
+          )}
           <Button key="dismiss" label="Not this" hotkey="n" onPress={pressNot} />
           <Button key="never" label="Never here" hotkey="v" onPress={pressNever} />
         </Box>

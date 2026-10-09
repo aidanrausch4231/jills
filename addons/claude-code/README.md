@@ -17,6 +17,9 @@ A Claude Code mod (a plugin with a function-hooks module, early-access API). It 
   `jills never`. The letter keys work only while the card has the focus (ctrl+x tab or a click); there are no digit
   keys, because a digit typed into an empty prompt would press them. The next prompt removes the card.
   In auto mode the run starts without a card or pane: status row, toast and a line for Claude; `/jills-panel` shows it.
+  When the Jill has a required input the suggestion left empty, the card says `needs: <names> — use /jills go name=value`
+  and has no Start (auto mode then shows the card instead of starting). A start that fails keeps the card and shows
+  `Jills: couldn't start <jill>: <error>` in the status row for 60 s, besides the toast.
 - **Progress pane** `jills-run`, opened by Start: Jill, state, elapsed time, one row per step instance in start
   order (`build@2` shows as "build (round 2)", nested steps indented), merge result, error or needs-you reason,
   branch, and **Stop** / **Close**. `/jills-panel` reopens it for the latest run of this session.

@@ -12,7 +12,7 @@ import type { RunEvent, RunRecord } from "../runs.js";
 export const PLUGIN_API_VERSION = 1 as const;
 
 // ---- matcher ----
-export type JillSummary = { name: string; description: string; when?: string; inputs: string[]; keywords: string[] };
+export type JillSummary = { name: string; description: string; when?: string; inputs: string[]; keywords: string[]; /** required inputs with no default */ required?: string[] };
 export type Turn = { role: "user" | "assistant"; text: string };
 export interface MatchInput {
   message: string;
