@@ -4,3 +4,4 @@ dist/
 *.log
 .env
 addons/claude-code/mod/jills/.claude-plugin/types/
+addons/claude-code/mod/jills/tsconfig.json
