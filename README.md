@@ -53,6 +53,7 @@ agent_cli: pi                   # pi or claude (Claude Code runner); other agent
 # agent_bin: /path/to/pi        # optional binary override
 # claude_bin: /path/to/claude   # Claude Code runner: optional binary override
 # claude_default_model: claude-opus-5-5  # replaces default_model for claude steps
+# claude_tools: [Read, Grep, Glob, Write, Edit, "Bash(npm test:*)", "Bash(pnpm test:*)", "Bash(node --test:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"]  # writer claude steps only
 tiers: { spinsoft: openrouter/some-cheap-model }
 default_model: openai-codex/gpt-5.6-sol
 # plugins: [~/.jills/plugins/my-runner.js]
@@ -120,7 +121,9 @@ body is the instructions. Model = `step.model ?? agent.model ?? tiers[agent.tier
 step `cli: claude`, else the agent file's `cli:`, else config `agent_cli`. It needs `claude`
 installed and logged in; it uses your Claude plan through claude's own login (Jills passes no
 credentials and never reads `~/.claude`). It runs
-`claude -p --model M --append-system-prompt <instructions> --permission-mode P --tools T --allowedTools A --output-format text -- "<task>"`.
+`claude -p --model M --append-system-prompt-file <instructions file> --permission-mode P --tools T --allowedTools A --strict-mcp-config --setting-sources "" --input-format text --output-format text`
+with the task on stdin. `--setting-sources ""` and `--strict-mcp-config` keep your user, project and
+local settings (allow rules, hooks) and MCP servers out of the run.
 
 - Model: `step.model ?? agent.model ?? tiers[tier] ?? claude_default_model` (default
   `claude-opus-5-5`); a leading `anthropic/` is dropped.
@@ -128,9 +131,12 @@ credentials and never reads `~/.claude`). It runs
   (no `tools:` = read, grep, find, ls, plus write, edit for writers). Another name is a `jills check` error.
 - Permissions: a `writes: true` step gets `acceptEdits`; any other step gets no Write/Edit tools at all
   and the ask-first mode (`manual`). Never `bypassPermissions`. In print mode an action nobody approved
-  is denied, so the agent must pre-approve what it needs: Bash is available only when `tools:` lists
-  `bash`, and runs only commands named in the agent file's `claude_tools:` (passed verbatim as
-  `--allowedTools`, e.g. `[Read, Grep, "Bash(pnpm test:*)"]`).
+  is denied, so a step must pre-approve what it needs in `--allowedTools`: the agent file's
+  `claude_tools:` (verbatim), else for writer steps config `claude_tools` (example above), else the
+  mapped tools without Bash. Bash is available only when `tools:` lists `bash`.
+- A step without `writes: true` may approve only tools it has, and never Write, Edit, MultiEdit,
+  NotebookEdit or any Bash entry. A model or `claude_tools` entry starting with `-` is refused too.
+  Both are `jills check` errors, and the step refuses to start.
 
 ### How a run works
 

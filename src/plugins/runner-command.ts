@@ -12,6 +12,8 @@ export interface SpawnOpts {
   env?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Text written to the process's stdin (else stdin is closed). */
+  input?: string;
 }
 
 /**
@@ -29,7 +31,8 @@ export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
     let settled = false;
     let killTimer: NodeJS.Timeout | undefined;
     const runId = o.env?.JILLS_RUN_ID;
-    const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ["ignore", fd, fd], detached: true });
+    const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: [o.input === undefined ? "ignore" : "pipe", fd, fd], detached: true });
+    child.stdin?.on("error", () => {}).end(o.input); // a child that exits without reading must not crash us
     const pid = child.pid;
     const killGroup = (sig: NodeJS.Signals) => {
       if (pid && (!settled || (runId && taggedPids(runId, pid).length))) signal(-pid, sig);
