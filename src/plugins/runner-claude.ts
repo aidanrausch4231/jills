@@ -44,10 +44,14 @@ export function claudeTools(agent: AgentDef, writes: boolean): string[] {
 /** step.model ?? agent.model ?? tiers[tier] ?? claude_default_model, without a leading `anthropic/`. */
 export function claudeModel(stepModel: string | undefined, agent: AgentDef, config: JillsConfig): string {
   const raw = config.raw;
-  const m = String(resolveModel(stepModel, agent, (raw.tiers ?? {}) as Record<string, unknown>, raw.claude_default_model ?? CLAUDE_DEFAULT_MODEL));
+  const m = String(resolveModel(stepModel, agent, (raw.tiers ?? {}) as Record<string, unknown>, raw.claude_default_model ?? CLAUDE_DEFAULT_MODEL)).replace(/^anthropic\//, "");
   if (m.startsWith("-")) throw new Error(`agent ${agent.name}: model "${m}" must not start with "-"`);
-  return m.replace(/^anthropic\//, "");
+  return m;
 }
+
+/** One tool per entry: a built-in with an optional rule (spaces ok; no commas, tabs, newlines or parentheses inside), or (writers only) an MCP tool. */
+const BUILTIN_ENTRY = /^[A-Z][A-Za-z0-9_]*(\([^()\n\r\t,]*\))?$/;
+const MCP_ENTRY = /^mcp__[A-Za-z0-9_-]+(__[A-Za-z0-9_-]+)?$/;
 
 /** allowedTools: agent claude_tools ?? (writers only) config claude_tools ?? the tools without Bash. Throws on an unsafe entry. */
 export function claudeAllowed(agent: AgentDef, writes: boolean, tools: string[], config: JillsConfig): string[] {
@@ -57,7 +61,8 @@ export function claudeAllowed(agent: AgentDef, writes: boolean, tools: string[],
   for (const t of allowed) {
     const bad = (why: string) => new Error(`agent ${agent.name}: claude_tools entry "${t}" ${why}`);
     if (t.startsWith("-")) throw bad(`must not start with "-"`);
-    const base = t.replace(/\(.*$/s, "").trim();
+    if (!BUILTIN_ENTRY.test(t) && !(writes && MCP_ENTRY.test(t))) throw bad(`is not one tool name (Tool or Tool(rule) without commas, newlines or parentheses in the rule${writes ? ", or mcp__server__tool" : ""})`);
+    const base = t.replace(/\(.*$/s, "");
     if (!writes && NON_WRITER_DENY.has(base)) throw bad("is not allowed in a step without writes: true (no write or Bash approvals)");
     if (!writes && !tools.includes(base)) throw bad(`names a tool the step does not have (tools: ${tools.join(", ") || "none"})`);
   }
@@ -70,8 +75,9 @@ export function buildClaudeCommand(agent: AgentDef, step: Pick<StepDef, "model" 
   const tools = claudeTools(agent, step.writes);
   const allowed = claudeAllowed(agent, step.writes, tools, config);
   const mode = step.writes ? WRITER_MODE : ASK_MODE;
-  const args = ["-p", "--model", model, "--append-system-prompt-file", promptFile, "--permission-mode", mode, "--tools", tools.join(",")];
-  if (allowed.length) args.push("--allowedTools", allowed.join(","));
+  // --tools and --allowedTools are variadic (<tools...>): one argv value per tool; no entry starts with "-"
+  const args = ["-p", "--model", model, "--append-system-prompt-file", promptFile, "--permission-mode", mode, "--tools", ...(tools.length ? tools : [""])];
+  if (allowed.length) args.push("--allowedTools", ...allowed);
   args.push("--strict-mcp-config", "--setting-sources", "", "--input-format", "text", "--output-format", "text");
   return { cmd: config.raw.claude_bin ? String(config.raw.claude_bin) : "claude", args, model, input: task };
 }

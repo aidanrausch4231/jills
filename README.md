@@ -135,7 +135,9 @@ local settings (allow rules, hooks) and MCP servers out of the run.
   `claude_tools:` (verbatim), else for writer steps config `claude_tools` (example above), else the
   mapped tools without Bash. Bash is available only when `tools:` lists `bash`.
 - A step without `writes: true` may approve only tools it has, and never Write, Edit, MultiEdit,
-  NotebookEdit or any Bash entry. A model or `claude_tools` entry starting with `-` is refused too.
+  NotebookEdit or any Bash entry. Every `claude_tools` entry is exactly one tool: `Tool` or `Tool(rule)`
+  (spaces allowed in the rule; no commas, tabs, newlines or parentheses), or for writer steps an
+  `mcp__server__tool` name; each is passed as its own argv value. A model or entry starting with `-` is refused.
   Both are `jills check` errors, and the step refuses to start.
 
 ### How a run works

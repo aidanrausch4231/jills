@@ -12,7 +12,12 @@ import { tmp, tmpHome, writeAgent, writeJill } from "./helpers.js";
 
 const agent = { name: "ex", description: "", instructions: "Be brief.", path: "/a/ex.md", tools: ["read", "grep", "find", "ls", "write", "edit", "bash"] };
 const step = (o: Partial<StepDef> = {}): StepDef => ({ name: "s", agent: "ex", needs: [], copies: 1, writes: false, merges: false, extra: {}, ...o });
-const flag = (args: string[], f: string) => args[args.indexOf(f) + 1];
+/** The values after flag `f` (up to the next --option), comma-joined for short asserts. */
+const flag = (args: string[], f: string) => {
+  const rest = args.slice(args.indexOf(f) + 1);
+  const end = rest.findIndex((a) => a.startsWith("-"));
+  return rest.slice(0, end < 0 ? undefined : end).join(",");
+};
 const buildClaudeCommand = (a: Parameters<typeof build>[0], s: Parameters<typeof build>[1], task: string, cfg: Parameters<typeof build>[3]) => build(a, s, task, cfg, "/p.md");
 const ISOLATE = ["--strict-mcp-config", "--setting-sources", "", "--input-format", "text", "--output-format", "text"];
 
@@ -20,7 +25,7 @@ test("claude command: flags, writer vs non-writer permissions, tool mapping", ()
   const cfg = loadConfig(tmpHome());
   const w = buildClaudeCommand(agent, { writes: true }, "fix it", cfg);
   assert.equal(w.cmd, "claude");
-  assert.deepEqual(w.args, ["-p", "--model", "claude-opus-5-5", "--append-system-prompt-file", "/p.md", "--permission-mode", "acceptEdits", "--tools", "Read,Grep,Glob,Write,Edit,Bash", "--allowedTools", "Read,Grep,Glob,Write,Edit", ...ISOLATE]);
+  assert.deepEqual(w.args, ["-p", "--model", "claude-opus-5-5", "--append-system-prompt-file", "/p.md", "--permission-mode", "acceptEdits", "--tools", "Read", "Grep", "Glob", "Write", "Edit", "Bash", "--allowedTools", "Read", "Grep", "Glob", "Write", "Edit", ...ISOLATE]);
   assert.equal(w.input, "fix it"); // task on stdin, never argv
   assert.ok(!w.args.includes("fix it") && !w.args.includes("--"));
   const r = buildClaudeCommand(agent, { writes: false }, "look", cfg);
@@ -113,7 +118,7 @@ test("non-writer claude_tools: no write or Bash approvals, only tools the step h
   const ag = { ...agent, tools: ["read", "grep", "bash", "write"] };
   for (const t of ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Bash(*)", "Bash(git status:*)", "Write(src/**)"])
     assert.throws(() => buildClaudeCommand({ ...ag, claudeTools: ["Read", t] }, { writes: false }, "t", cfg), /not allowed in a step without writes: true/, t);
-  for (const t of ["Glob", "WebFetch", "mcp__x__y"]) assert.throws(() => buildClaudeCommand({ ...ag, claudeTools: [t] }, { writes: false }, "t", cfg), /names a tool the step does not have/, t);
+  for (const t of ["Glob", "WebFetch"]) assert.throws(() => buildClaudeCommand({ ...ag, claudeTools: [t] }, { writes: false }, "t", cfg), /names a tool the step does not have/, t);
   assert.doesNotThrow(() => buildClaudeCommand({ ...ag, claudeTools: ["Bash(git status:*)", "Write"] }, { writes: true }, "t", cfg));
 });
 
@@ -153,4 +158,28 @@ test("jills check errors and the run refuses an unsafe non-writer claude_tools b
   const run = await runNow("rev", { home, cwd: ws }).catch((e: Error) => ({ state: "threw", error: e.message }));
   assert.notEqual(run.state, "done");
   assert.ok(!existsSync(join(ws, "ran")), "claude must not start");
+});
+
+test("every claude_tools entry is exactly one tool: no smuggling through commas, spaces or newlines", () => {
+  const cfg = loadConfig(tmpHome());
+  const smuggled = ["Read(x),Bash", "Read(x) Bash", "Read(a)\nWrite", 'Read("x") mcp__srv__tool', "Bash(x) Write", "Read\tBash", "Bash(x\ty)", "Bash(a,b)", "Read Bash", "Bash(a(b))", "read", "Read)", "mcp__srv__tool,Bash", "mcp__a b"];
+  for (const writes of [true, false])
+    for (const t of smuggled) assert.throws(() => buildClaudeCommand({ ...agent, claudeTools: ["Read", t] }, { writes }, "t", cfg), /is not one tool name/, JSON.stringify(t));
+  for (const t of smuggled) assert.throws(() => buildClaudeCommand(agent, { writes: true }, "t", { ...cfg, raw: { ...cfg.raw, claude_tools: [t] } }), /is not one tool name/, JSON.stringify(t));
+  // valid entries pass, each as its own argv value
+  const ok = buildClaudeCommand({ ...agent, claudeTools: ["Bash(npm test:*)", "Read", "mcp__srv__tool", "mcp__srv"] }, { writes: true }, "t", cfg);
+  const i = ok.args.indexOf("--allowedTools");
+  assert.deepEqual(ok.args.slice(i + 1, i + 5), ["Bash(npm test:*)", "Read", "mcp__srv__tool", "mcp__srv"]);
+  assert.equal(ok.args[i + 5], "--strict-mcp-config");
+  // non-writers: MCP names are not tools the step has
+  assert.throws(() => buildClaudeCommand({ ...agent, claudeTools: ["mcp__srv__tool"] }, { writes: false }, "t", cfg), /is not one tool name/);
+  // no tools at all: --tools gets one empty value (claude: "" disables all tools)
+  const none = buildClaudeCommand({ ...agent, tools: ["write"] }, { writes: false }, "t", cfg);
+  assert.deepEqual(none.args.slice(none.args.indexOf("--tools"), none.args.indexOf("--tools") + 3), ["--tools", "", "--strict-mcp-config"]);
+});
+
+test("model: anthropic/ is stripped before the leading - check", () => {
+  const cfg = loadConfig(tmpHome());
+  assert.throws(() => buildClaudeCommand(agent, { writes: true, model: "anthropic/--dangerously-skip-permissions" }, "t", cfg), /model "--dangerously-skip-permissions" must not start with "-"/);
+  assert.throws(() => buildClaudeCommand(agent, { writes: true, model: "anthropic/-x" }, "t", cfg), /must not start with "-"/);
 });
