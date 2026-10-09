@@ -72,7 +72,9 @@ export function runView(r: RawRecord, polledMs: number): JillsRun {
     const stale = s.state === 'skipped' && /^stale/.test(s.reason ?? '')
     return { key, ...stepLabel(key), state: stale ? 'stale' : (s.state ?? 'pending'), ...(s.reason ? { reason: s.reason } : {}) }
   })
-  const merge = [...(r.events ?? [])].reverse().find(e => e.type === 'step-done' && /merge/.test(e.note ?? ''))?.note
+  // Only a finished merge step's note ("done: merged into main"); a child-worktree conflict
+  // ("needs-you: merge of X into Y conflicts") is the needs-you reason, not a merge result.
+  const merge = [...(r.events ?? [])].reverse().find(e => e.type === 'step-done' && /^done: .*merge/.test(e.note ?? ''))?.note
   return {
     id: r.id ?? '?',
     jill: r.jill ?? '?',

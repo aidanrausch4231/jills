@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -13,6 +13,11 @@ import { giveUpMs, hookOutput, HOOK_MARGIN_MS, jevTimeoutMs, recentTurns } from 
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "..", "hook.mjs");
+const DIST = join(HERE, "..", "..", "..", "dist", "src", "index.js");
+// The hook, the CLI and jevTimeoutMs load the built core; without it these tests skip, saying why.
+const NO_DIST = existsSync(DIST) ? false : `dist/ missing (${DIST}): run pnpm build first`;
+/** A test that needs the built core in dist/. */
+const distTest = (name, fn) => test(name, { skip: NO_DIST }, fn);
 const dirs = [];
 after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
@@ -61,7 +66,7 @@ const hookInput = (repo, prompt, session = "cc-sess-1", extra = {}) => ({
   ...extra,
 });
 
-test("no match: prints nothing, exit 0", () => {
+distTest("no match: prints nothing, exit 0", () => {
   const { home, repo } = setup();
   const r = runHook(home, hookInput(repo, "what a nice day"), { JILLS_HOOK_DEBUG: "1" });
   assert.equal(r.code, 0);
@@ -69,7 +74,7 @@ test("no match: prints nothing, exit 0", () => {
   assert.match(r.err, /quiet: just talk/);
 });
 
-test("manual suggestion: systemMessage for the user, additionalContext for Claude", () => {
+distTest("manual suggestion: systemMessage for the user, additionalContext for Claude", () => {
   const { home, repo } = setup();
   const r = runHook(home, hookInput(repo, "there is a crash bug in the login page"));
   assert.equal(r.code, 0);
@@ -88,7 +93,7 @@ test("manual suggestion: systemMessage for the user, additionalContext for Claud
   assert.equal(s.lastSuggestion.jill, "fix-bug");
 });
 
-test("auto mode: Claude is told to start_jill and wait in the background", () => {
+distTest("auto mode: Claude is told to start_jill and wait in the background", () => {
   const { home, repo } = setup("auto: true\n");
   const r = runHook(home, hookInput(repo, "please fix this bug", "cc-auto"));
   const o = JSON.parse(r.out);
@@ -100,7 +105,7 @@ test("auto mode: Claude is told to start_jill and wait in the background", () =>
   assert.match(ctx, /--session cc-auto/);
 });
 
-test("quiet mode: no output for this chat, other chats still get suggestions", () => {
+distTest("quiet mode: no output for this chat, other chats still get suggestions", () => {
   const { home, repo } = setup();
   const cli = join(HERE, "..", "..", "..", "dist", "src", "cli.js");
   execFileSync(process.execPath, [cli, "quiet", "--session", "cc-quiet"], { env: { ...process.env, JILLS_HOME: home } });
@@ -111,7 +116,7 @@ test("quiet mode: no output for this chat, other chats still get suggestions", (
   assert.notEqual(runHook(home, hookInput(repo, "fix the crash bug", "cc-other")).out, "");
 });
 
-test("slash commands, shell escapes, system events, empty and bad input are skipped without error", () => {
+distTest("slash commands, shell escapes, system events, empty and bad input are skipped without error", () => {
   const { home, repo } = setup();
   for (const p of ["/jills go", "!git status", "   ", "<task-notification>fix the crash bug</task-notification>"]) {
     const r = runHook(home, hookInput(repo, p, "cc-skip"));
@@ -160,8 +165,8 @@ test("giveUpMs always exceeds the Jev request timeout", () => {
   for (const jev of [1000, 8000, 30000]) assert.ok(giveUpMs(jev, "1") > jev);
 });
 
-test("jevTimeoutMs reads jev.timeout_ms from the config (plug-in keys live under raw)", async () => {
-  const lib = await import(pathToFileURL(join(HERE, "..", "..", "..", "dist", "src", "index.js")).href);
+distTest("jevTimeoutMs reads jev.timeout_ms from the config (plug-in keys live under raw)", async () => {
+  const lib = await import(pathToFileURL(DIST).href);
   const { home } = setup("jev: {timeout_ms: 20000}\n");
   const before = process.env.JILLS_HOME;
   process.env.JILLS_HOME = home;
@@ -175,7 +180,7 @@ test("jevTimeoutMs reads jev.timeout_ms from the config (plug-in keys live under
   assert.equal(jevTimeoutMs({ loadConfig: () => { throw new Error("bad yaml"); } }), undefined);
 });
 
-test("a slow Jev reply inside jev.timeout_ms still reaches the user (hook does not give up first)", async () => {
+distTest("a slow Jev reply inside jev.timeout_ms still reaches the user (hook does not give up first)", async () => {
   // Jev answers after 1.5 s; jev.timeout_ms is 5 s. A hook that gave up at
   // JILLS_HOOK_TIMEOUT_MS=500 would print nothing.
   const jev = createServer((req, res) => {

@@ -14,6 +14,7 @@ const PANE = 'jills-run'
 const POLL_MS = 1500 // while the pane is open
 const POLL_CLOSED_MS = 5000 // pane closed: the status row and the end notice still need the result
 const FINAL_STATUS_MS = 60_000
+const MAX_FAILURES = 5 // `jills status` failing this many times in a row ends the polling
 
 const card = atom({ plugin: 'jills', key: 'card' } as const, null)
 const run = atom({ plugin: 'jills', key: 'run' } as const, null)
@@ -46,7 +47,7 @@ async function tellClaude($: $, text: string) {
   }
 }
 
-type Poll = { id: string; timer?: Timer }
+type Poll = { id: string; timer?: Timer; failures: number }
 
 /** Per-session module state; a hot reload starts it fresh (`/jills-panel` resumes polling). */
 const live = {
@@ -72,11 +73,12 @@ async function suggest($: $, text: string, seq: number) {
   if (seq !== live.asked || !s) return
   const shown = cardFrom(s)
   if (!shown) return
-  if (s.auto) await start($)
+  if (s.auto) await start($, true)
   else await update($, card, () => shown)
 }
 
-async function start($: $) {
+/** `auto`: started by auto mode, not a press; the pane stays shut (`/jills-panel` opens it). */
+async function start($: $, auto: boolean) {
   await update($, card, () => null)
   const session = await $.session.id()
   const repo = await $.session.cwd()
@@ -90,17 +92,26 @@ async function start($: $) {
   const jill = g.jill ?? '?'
   const first = runView({ id, jill, state: g.state ?? 'queued' }, await $.clock.now())
   await update($, run, () => first)
-  live.paneOpen = true
-  void $.ui.open({ id: PANE, title: `Jill ${jill}` })
+  if (auto) $.ui.toast(`Jill ${jill} started (auto mode); /jills-panel shows it`)
+  else {
+    live.paneOpen = true
+    void $.ui.open({ id: PANE, title: `Jill ${jill}` })
+  }
   live.statusRun = undefined
   $.ui.status(`Jills: ${jill} · starting · 0/0 steps`)
   await tellClaude($, `Jills run ${id} started (Jill ${jill}). The Jills mod shows its progress and will add the result to this chat when it ends; do not start it again or wait on it.`)
   follow($, id)
 }
 
+/** Our own close: the plugin's own `ui.close` hook does not run for its own call. */
+async function closePane($: $) {
+  live.paneOpen = false
+  await $.ui.close({ id: PANE })
+}
+
 function follow($: $, id: string) {
   live.poll?.timer?.cancel()
-  const p: Poll = { id }
+  const p: Poll = { id, failures: 0 }
   live.poll = p
   void tick($, p)
 }
@@ -113,8 +124,14 @@ async function tick($: $, p: Poll) {
   if (out.exitCode === 0 && r) {
     const view = runView(r, await $.clock.now())
     await update($, run, () => view)
+    p.failures = 0
     if (TERMINAL.has(view.state)) return finish($, view)
     $.ui.status(statusText(view))
+  } else if (++p.failures >= MAX_FAILURES) {
+    live.poll = undefined
+    $.ui.status(undefined)
+    $.ui.toast(`Jills: lost track of run ${p.id}`)
+    return
   }
   p.timer = $.clock.after(live.paneOpen ? POLL_MS : POLL_CLOSED_MS, () => void tick($, p))
 }
@@ -157,7 +174,7 @@ export const register: Register = on => {
     return entered
   }).catch(($, e, next) => next(e)) // never holds a prompt back
 
-  on('ui.close', { id: PANE }, ($, e, next) => {
+  on('ui.close', { id: PANE }, ($, e, next) => { // the person's close (ctrl+x x, the close mark)
     live.paneOpen = false
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -193,9 +210,11 @@ export const register: Register = on => {
           </Text>
         ))}
         <Box flexDirection="row" gap={1}>
-          <Button key="start" label="Start" hotkey="1" variant="primary" onPress={() => start($)} />
-          <Button key="dismiss" label="Not this" hotkey="2" onPress={pressNot} />
-          <Button key="never" label="Never here" hotkey="3" onPress={pressNever} />
+          {/* Letter hotkeys only: they press while the band holds the focus (ctrl+x tab or a click).
+              A digit would also fire from an empty prompt, so "1. fix ..." could press Start. */}
+          <Button key="start" label="Start" hotkey="s" variant="primary" onPress={() => start($, false)} />
+          <Button key="dismiss" label="Not this" hotkey="n" onPress={pressNot} />
+          <Button key="never" label="Never here" hotkey="v" onPress={pressNever} />
         </Box>
       </Box>
     )
@@ -239,7 +258,7 @@ export const register: Register = on => {
               if (live.poll?.id === r.id) follow($, r.id)
             }} />
           ) : null}
-          <Button key="close" label="Close" hotkey="c" role="dismiss" onPress={() => $.ui.close({ id: PANE })} />
+          <Button key="close" label="Close" hotkey="c" role="dismiss" onPress={() => closePane($)} />
         </Box>
       </Box>
     )

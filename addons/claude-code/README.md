@@ -13,8 +13,10 @@ A Claude Code mod (a plugin with a function-hooks module, early-access API). It 
 
 - **Suggestion card** above the prompt after each of your prompts (not `/`, `!` or `<...>` system events, and only
   prompts you typed): `Jill <name> · <description>`, the proposed inputs, warnings (no worktree, merges into a
-  branch) and **Start** (`1`) / **Not this** (`2`) / **Never here** (`3`), which run `jills go`, `jills dismiss` and
-  `jills never`. Digits work from an empty prompt. The next prompt removes the card. In auto mode the run starts without a card.
+  branch) and **Start** (`s`) / **Not this** (`n`) / **Never here** (`v`), which run `jills go`, `jills dismiss` and
+  `jills never`. The letter keys work only while the card has the focus (ctrl+x tab or a click); there are no digit
+  keys, because a digit typed into an empty prompt would press them. The next prompt removes the card.
+  In auto mode the run starts without a card or pane: status row, toast and a line for Claude; `/jills-panel` shows it.
 - **Progress pane** `jills-run`, opened by Start: Jill, state, elapsed time, one row per step instance in start
   order (`build@2` shows as "build (round 2)", nested steps indented), merge result, error or needs-you reason,
   branch, and **Stop** / **Close**. `/jills-panel` reopens it for the latest run of this session.
@@ -23,7 +25,8 @@ A Claude Code mod (a plugin with a function-hooks module, early-access API). It 
   chat for Claude.
 
 It polls `jills status <run> --json` every 1.5 s while the pane is open and every 5 s while it is closed (the
-status row and the end notice still need it), and stops when the run ends. `<seen>` counts the step instances
+status row and the end notice still need it), and stops when the run ends or after 5 failed `jills status` calls in
+a row (toast "Jills: lost track of run <id>"). `<seen>` counts the step instances
 the record has started; the record has no planned total.
 
 Develop and check (from the repo root; nothing is installed):

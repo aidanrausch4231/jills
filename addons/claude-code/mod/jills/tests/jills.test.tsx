@@ -64,6 +64,9 @@ type World = {
   opened: string[]
   record: object
   suggestion: object
+  goFails: boolean
+  statusFails: boolean
+  slowSuggest: boolean
   clock: ReturnType<typeof mock.clock>
   appended: () => string[]
 }
@@ -77,6 +80,9 @@ function world(on: On, now = T0 + 10_000): World {
     opened: [],
     record: RUNNING,
     suggestion: SUGGESTION,
+    goFails: false,
+    statusFails: false,
+    slowSuggest: false,
     clock: mock.clock(on, { now }),
     appended: () => [],
   }
@@ -96,14 +102,17 @@ function world(on: On, now = T0 + 10_000): World {
     const { Box } = $.ui.resolve(e)
     return <Box key="engine-band" /> // the band as the engine draws it with no mod
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     const argv = [...e.argv]
     w.argv.push(argv)
     const ok = (out: unknown) => ({ value: { exitCode: 0, stdout: JSON.stringify(out), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    const fail = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     switch (argv[1]) {
-      case 'suggest': return ok(w.suggestion)
-      case 'go': return ok({ run: 'r1', jill: 'fix-bug', state: 'queued', record: '/tmp/x' })
-      case 'status': return ok(w.record)
+      case 'suggest':
+        if (w.slowSuggest) await w.clock.sleep(600_000) // Jev hangs; the test never moves the clock that far
+        return ok(w.suggestion)
+      case 'go': return w.goFails ? fail('jills: no suggestion to start in this chat\n') : ok({ run: 'r1', jill: 'fix-bug', state: 'queued', record: '/tmp/x' })
+      case 'status': return w.statusFails ? fail('no run r1') : ok(w.record)
       case 'wait': return ok({ ...w.record, line: `jills run r1 ${(w.record as { state: string }).state}: fix-bug | branch jills/fix-bug-r1` })
       default: return ok({})
     }
@@ -182,14 +191,61 @@ test('slash commands, shell escapes, system events and non-person prompts never 
   expect(calls(w, 'suggest')).toHaveLength(0)
 })
 
-test('auto mode starts the run without a card', async ($, on) => {
+test('auto mode starts the run without a card or an unasked pane', async ($, on) => {
   const w = world(on)
   w.suggestion = { ...SUGGESTION, auto: true }
   await $.prompt.submit(person('fix the crash'))
   await w.clock.settle()
   expect(calls(w, 'go')).toHaveLength(1)
+  expect(w.opened).toEqual([])
+  expect(w.toasts).toContainEqual(expect.stringContaining('Jill fix-bug started (auto mode)'))
+  expect(w.statuses.at(-1)).toBe('Jills: fix-bug · build (round 2) · 2/4 steps')
+  expect(w.appended()).toContainEqual(expect.stringContaining('Jills run r1 started (Jill fix-bug)'))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+})
+
+test('no card button has a digit hotkey, and a bare "1" prompt never starts a run', async ($, on) => {
+  const w = world(on)
+  await $.prompt.submit(person('fix the crash'))
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons).toHaveLength(3)
+  for (const b of buttons) expect(String(b.props.hotkey ?? '')).not.toMatch(/^[0-9]$/)
+  w.suggestion = { action: 'quiet', reason: 'just talk', auto: false }
+  await $.prompt.submit(person('1'))
+  await w.clock.settle()
+  expect(calls(w, 'go')).toHaveLength(0)
+})
+
+test('a hanging suggest never holds the prompt back', async ($, on) => {
+  const w = world(on)
+  w.slowSuggest = true
+  const entered = await $.prompt.submit(person('fix the crash'))
+  expect(entered).toMatchObject({ text: 'fix the crash' })
+  await w.clock.settle()
+  expect(calls(w, 'suggest')).toHaveLength(1)
+})
+
+test('a prompt that starts with "--" stays one argument after --', async ($, on) => {
+  const w = world(on)
+  await $.prompt.submit(person('--x fix the crash'))
+  await w.clock.settle()
+  const argv = calls(w, 'suggest')[0] ?? []
+  expect(argv.slice(-2)).toEqual(['--', '--x fix the crash'])
+})
+
+test('a failed start shows a toast and opens nothing', async ($, on) => {
+  const w = world(on)
+  w.goFails = true
+  await $.prompt.submit(person('fix the crash'))
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'start' })
+  expect(w.toasts).toEqual(['Jills: could not start (jills: no suggestion to start in this chat)'])
+  expect(w.opened).toEqual([])
+  expect(calls(w, 'status')).toHaveLength(0)
 })
 
 /** Suggest, press Start, let the first status poll land. */
@@ -250,6 +306,66 @@ test('a run that ends: toast, final status row, result line for Claude, status c
   expect(await ui.find({ type: 'Button', key: 'stop' })).toBeUndefined()
   await w.clock.advance(60_000)
   expect(w.statuses.at(-1)).toBeUndefined()
+})
+
+test('/jills-panel reopens the pane of the latest run', async ($, on) => {
+  const w = world(on)
+  const presentation = { isFullscreen: true, columns: 160 }
+  const origin = { kind: 'composer' } as const
+  expect(await $.command.run({ command: 'jills-panel', args: '', origin, presentation })).toMatchObject({ text: 'Jills: no run in this session yet.' })
+  await started($, w)
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pane.press({ key: 'close' })
+  expect(await $.command.run({ command: 'jills-panel', args: '', origin, presentation })).toMatchObject({ text: 'Jills: showing run r1.' })
+  expect(w.opened).toEqual(['jills-run', 'jills-run'])
+})
+
+test('Close slows polling to every 5 s', async ($, on) => {
+  const w = world(on)
+  await started($, w)
+  await w.clock.advance(1500)
+  expect(calls(w, 'status')).toHaveLength(2)
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pane.press({ key: 'close' })
+  await w.clock.advance(1500) // the tick already due at 1.5 s
+  const n = calls(w, 'status').length
+  await w.clock.advance(4000)
+  expect(calls(w, 'status')).toHaveLength(n)
+  await w.clock.advance(1000)
+  expect(calls(w, 'status')).toHaveLength(n + 1)
+})
+
+test('needs you: the pane shows the reason, and a conflict note is no merge result', async ($, on) => {
+  const w = world(on)
+  await started($, w)
+  w.record = {
+    ...RUNNING,
+    state: 'needs-you',
+    finished: at(60),
+    error: 'merge conflict',
+    conflicts: ['src/a.ts'],
+    steps: { ...RUNNING.steps, 'build@2': { key: 'build@2', state: 'needs-you', reason: 'merge of build#2 into jills/fix-bug-r1 conflicts', started: at(5) } },
+    events: [{ at: at(59), type: 'step-done', step: 'build@2', note: 'needs-you: merge of build#2 into jills/fix-bug-r1 conflicts' }],
+  }
+  await w.clock.advance(1500)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: 'needs you: merge of build#2 into jills/fix-bug-r1 conflicts' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'conflicts: src/a.ts' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^merge:/ })).toBeUndefined()
+  expect(w.toasts).toContainEqual('Jill fix-bug needs you')
+  expect(w.appended().at(-1)).not.toContain('| merge:')
+})
+
+test('polling gives up after 5 failed status calls in a row', async ($, on) => {
+  const w = world(on)
+  await started($, w)
+  w.statusFails = true
+  for (let i = 0; i < 5; i++) await w.clock.advance(1500)
+  expect(calls(w, 'status')).toHaveLength(6)
+  expect(w.toasts).toContainEqual('Jills: lost track of run r1')
+  expect(w.statuses.at(-1)).toBeUndefined()
+  await w.clock.advance(30_000)
+  expect(calls(w, 'status')).toHaveLength(6)
 })
 
 test('polling stops once the run ended', async ($, on) => {
