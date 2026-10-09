@@ -217,3 +217,23 @@ steps:
   assert.equal(r.steps["sib/u"], undefined, "nothing new starts inside a stale nested Jill");
   assert.equal(r.steps["sib@2/t"]!.state, "done");
 });
+
+test("a nested step that goes stale under a parent back-arrow is skipped, never takes its own on_fail", async () => {
+  const home = tmpHome();
+  writeJill(home, "chk2", `worktree: false
+steps:
+  a: {run: 'true'}
+  t: {run: 'v=$(cat b.txt); sleep 1; [ "$v" = 2 ] || { echo inner no; exit 1; }', needs: [a], on_fail: {back_to: a, max_rounds: 1}}`);
+  writeJill(home, "nst2", `worktree: false
+steps:
+  build: {run: 'echo {{round}} > b.txt'}
+  review: {run: 'sleep 0.5; [ "$(cat b.txt)" = 2 ] || { echo fail; exit 1; }', needs: [build], on_fail: {back_to: build}}
+  sib: {jill: chk2, needs: [build]}`);
+  const r = await runNow("nst2", { home, cwd: tmp() });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps["sib/t"]!.state, "skipped");
+  assert.match(r.steps["sib/t"]!.reason!, /stale/);
+  assert.equal(r.steps["sib/a@2"], undefined, "the stale nested step took no back-arrow");
+  assert.equal(r.steps["sib@2/t"]!.state, "done");
+  assert.ok(!Object.values(r.steps).some((s) => s.state === "failed" && s.key.startsWith("sib/")), JSON.stringify(r.steps));
+});

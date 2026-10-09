@@ -17,7 +17,8 @@ Read this first. It applies to every agent (human or AI) changing this repo.
 - A **run** gets one git worktree (on by default, strongly recommended). The outermost
   Jill decides worktree, box and machine; nested Jills share them. Parallel writing
   steps get child worktrees merged back; conflicts stop at "needs you". Only a step that
-  declares `merges: true` may squash-merge into the user's branch, and core verifies it.
+  declares `merges: true` may squash-merge into the user's branch, and core verifies it; a
+  conflict with the user's branch stops the run and asks the user (Jills never resolves one).
 - A step can send work back to an earlier step on failure (`on_fail: {back_to, max_rounds}`).
 - The main agent is told when a Jill starts and is woken with the result (`jills wait`).
 

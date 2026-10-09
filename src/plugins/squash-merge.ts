@@ -25,13 +25,20 @@ export async function mergeStart(ws: Workspace, base: string): Promise<Start | s
   const added = (await git(repo, ["diff", "--name-only", "--diff-filter=A", `${b.head}...${pre}`])).split("\n");
   const clash = untracked.split("\n").filter((f) => f && added.includes(f));
   if (clash.length) return `untracked files in your checkout ${repo} would be overwritten by the merge: ${clash.join(", ")}; move them away, then start again`;
+  // A conflict with the base stops here: Jills never resolves or commits a conflict.
+  const mt = await gitRaw(repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", b.head, pre]);
+  if (mt.code === 1) {
+    const files = [...new Set(mt.stdout.split("\n").slice(1).map((l) => l.trim()).filter(Boolean))];
+    return `${base} changed since the run started and conflicts with ${ws.branch} in: ${files.join(", ")}; nothing was merged. Merge it yourself or rerun the Jill on the new ${base}.`;
+  }
+  if (mt.code !== 0) return `git merge-tree of ${base} and ${ws.branch} failed: ${mt.stderr.trim()}; nothing was merged`;
   return { tip: b.head, pre, refs, untracked };
 }
 
 /**
  * After the step. "merged": `base` got exactly one new commit on the old tip whose
  * tree is the squash of the run commit (merge-tree of tip and pre), or there was
- * nothing to merge. "untouched": nothing changed. "bad": anything else (run
+ * nothing to merge (reason "nothing to merge"). "untouched": nothing changed. "bad": anything else (run
  * branch, other branches or tags, untracked files changed; checkout dirty,
  * elsewhere or behind; wrong commit).
  */
@@ -52,23 +59,12 @@ export async function mergeCheck(ws: Workspace, base: string, s: Start): Promise
   if (refs !== s.refs) return bad(`the step changed other branches or tags in ${repo}`);
   if (untracked !== s.untracked) return bad(`the step changed untracked files in ${repo}`);
   if (b.dirty || b.branch !== base || b.head !== commit) return bad(`${repo} must be clean, on ${base}, at its new tip`);
-  if (commit === s.tip) return { state: want === tree ? "merged" : "untouched" };
+  if (commit === s.tip) return want === tree ? { state: "merged", reason: "nothing to merge" } : { state: "untouched" };
   if (parents.join() === s.tip && want === tree) return { state: "merged" };
   return bad(`${base} must get exactly one new commit on ${s.tip.slice(0, 12)} with the squash of ${ws.branch}`);
 }
 
-/**
- * Before a back-arrow reruns: `discard` resets the run worktree to its last commit
- * and removes untracked files (a stale step's writes); `base` (after a failed merge
- * step) merges the base tip into the run branch without committing. Conflicts stay
- * in the worktree for the builder; returns feedback naming them ("" when none).
- */
-export async function retry(ws: Workspace, o: { discard?: boolean; base?: string }): Promise<string> {
+/** Before a back-arrow reruns: `discard` resets the run worktree to its last commit and removes untracked files (a stale step's writes). */
+export async function retry(ws: Workspace, o: { discard?: boolean }): Promise<void> {
   if (o.discard) await git(ws.dir, ["reset", "-q", "--hard"]).then(() => git(ws.dir, ["clean", "-fdq"]));
-  if (!o.base) return "";
-  const m = await gitRaw(ws.dir, ["merge", "--no-commit", "-q", `refs/heads/${o.base}`]);
-  if (m.code === 0) return "";
-  const files = await git(ws.dir, ["diff", "--name-only", "--diff-filter=U"]);
-  if (!files) throw new Error(`git merge ${o.base} failed: ${m.stderr.trim() || m.stdout.trim()}`);
-  return `Resolve these merge conflicts with ${o.base} (the merge is in progress in the worktree; Jills commits your resolution as the merge): ${files.split("\n").join(", ")}\n\n`;
 }

@@ -10,9 +10,9 @@ and JILLS_BASE_BRANCH (checked out there).
 Do exactly this, nothing else:
 
 1. `cd "$JILLS_BASE_REPO"`, then `git merge --squash "$JILLS_RUN_BRANCH"`.
-2. If that conflicts (or refuses to start), run `git reset --merge` so the checkout is clean
-   again, and exit non-zero with the conflicting files. Do not resolve conflicts yourself: Jills
-   merges the base into the run branch and sends the conflicts back to the build step.
+2. If that fails (or refuses to start), run `git reset --merge` so the checkout is clean again,
+   and exit non-zero with the reason. Never resolve conflicts: Jills checks for conflicts before
+   this step runs and stops the run to ask the user.
 3. Otherwise `git commit -m "<subject from your task>"`. If there is nothing to commit, stop: that
    is fine.
 4. Print the new commit (`git log -1 --stat`) and stop.

@@ -86,8 +86,8 @@ export interface IsolationPlugin {
   /** Optional, needed for `merges: true`: mergeStart refuses (reason) an unsafe checkout, else snapshots it; mergeCheck judges the result. */
   mergeStart?(ws: Workspace, base: string): Promise<object | string>;
   mergeCheck?(ws: Workspace, base: string, start: object): Promise<MergeCheck>;
-  /** Optional, before a back-arrow reruns: drop stale changes (`discard`), merge the base in after a failed merge step (`base`); returns feedback. */
-  retry?(ws: Workspace, o: { discard?: boolean; base?: string }): Promise<string>;
+  /** Optional, before a back-arrow reruns: drop a stale step's changes (`discard`). Never merges or commits. */
+  retry?(ws: Workspace, o: { discard?: boolean }): Promise<void>;
 }
 // ---- check ----
 export type CheckInput = { step: StepDef; result: StepRunResult; logPath: string };

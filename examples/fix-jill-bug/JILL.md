@@ -25,8 +25,7 @@ steps:
       Fix this bug: {{inputs.task}}
       Research:
       {{steps.research.output}}
-      This is round {{round}}. Feedback from the last failed review or merge (empty in round 1). If it
-      lists merge conflicts, resolve the conflict markers in those files first:
+      This is round {{round}}. Feedback from the last failed review or merge (empty in round 1):
       {{feedback}}
       Keep the change small, add or update a test, run the tests. Do not commit; Jills commits for you.
   review:
@@ -55,5 +54,6 @@ Runs on its own branch `jills/fix-jill-bug-<run>`. The review loops back to the 
 says `VERDICT: clean` (at most 3 rounds). Then the `merge` step (the only step with `merges: true`)
 squash-merges the run branch into the branch you started the run from. Jills refuses to merge into a
 checkout with uncommitted changes or on another branch, and accepts the merge only if your branch got
-exactly one new commit holding the squash of the run branch. A conflict sends the work back to build
-with your branch merged into the run branch and the conflicting files named in the feedback.
+exactly one new commit holding the squash of the run branch. When your branch moved and conflicts
+with the run branch, the run stops before merging and asks you, naming the files; Jills never
+resolves a conflict.

@@ -116,22 +116,60 @@ test("a merge step that fails or merges nothing with the checkout untouched take
   assert.equal(status(repo), "");
 });
 
-test("N4: a squash conflict goes back to build with the base merged in; the builder resolves it", async () => {
+test("a base that advanced with a conflicting change -> needs-you before the merge step, nothing committed or merged", async () => {
   const home = tmpHome();
   const repo = tmpRepo();
-  const userEdit = `[ {{round}} != 1 ] || { cd "${repo}" && echo user > base.txt && git ${ID} commit -qam user; }`;
-  const build = `printf "%s" "{{feedback}}" > "$JILLS_WORKSPACE/../fb-{{round}}.txt"; echo built{{round}} > "$JILLS_WORKSPACE/base.txt"; ${userEdit}`;
-  writeJill(home, "clash", jill(`cd "$JILLS_BASE_REPO" && { git merge --squash "$JILLS_RUN_BRANCH" || { git reset -q --merge; exit 1; }; } && git ${ID} commit -qm sq`, "\n    on_fail: {back_to: build, max_rounds: 3}", build));
+  const userEdit = `cd "${repo}" && echo user > base.txt && git ${ID} commit -qam user`;
+  const build = `echo built > "$JILLS_WORKSPACE/base.txt"; ${userEdit}`;
+  writeJill(home, "clash", jill(`touch "$JILLS_WORKSPACE/../merge-ran"; ${SQUASH}`, "\n    on_fail: {back_to: build, max_rounds: 3}", build));
   const r = await runNow("clash", { home, cwd: repo });
-  assert.equal(r.state, "done", r.error);
-  assert.ok(r.steps["merge@2"]);
-  const fb = readFileSync(join(r.workspace!, "..", "fb-2.txt"), "utf8");
-  assert.match(fb, /Resolve these merge conflicts with main .*: base\.txt/);
-  // build@2's commit completes the merge of main into the run branch
-  assert.equal(git(repo, "rev-list", "--parents", "-n", "1", r.steps["build@2"]!.commit!).split(" ").length, 3);
-  assert.equal(readFileSync(join(repo, "base.txt"), "utf8"), "built2\n");
-  assert.equal(git(repo, "log", "-1", "--format=%s", "main^"), "user");
+  const userTip = git(repo, "rev-parse", "main");
+  assert.equal(r.state, "needs-you");
+  assert.match(r.error!, new RegExp(`main changed since the run started and conflicts with ${r.branch} in: base\\.txt; nothing was merged`));
+  assert.equal(r.steps.merge!.log, undefined);
+  assert.equal(existsSync(join(r.workspace!, "..", "merge-ran")), false, "the merge step never ran");
+  assert.equal(r.steps["build@2"], undefined, "no back-arrow");
+  assert.equal(git(repo, "log", "-1", "--format=%s", "main"), "user");
+  assert.equal(git(repo, "rev-parse", "main"), userTip);
+  assert.equal(readFileSync(join(repo, "base.txt"), "utf8"), "user\n");
   assert.equal(status(repo), "");
+  assert.doesNotMatch(git(repo, "log", "-p", r.branch!), /<<<<<<<|>>>>>>>/);
+});
+
+test("a merge step that exits non-zero without a conflict takes its back-arrow to build, then merges", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  const tip = git(repo, "rev-parse", "main");
+  const build = `printf "%s" "{{feedback}}" > "$JILLS_WORKSPACE/../fb-{{round}}.txt"; echo built{{round}} > new.txt`;
+  writeJill(home, "flaky", jill(`[ {{round}} -ge 2 ] || { echo "merge said no"; exit 1; }; ${SQUASH}`, "\n    on_fail: {back_to: build, max_rounds: 3}", build));
+  const r = await runNow("flaky", { home, cwd: repo });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(r.steps.merge!.state, "failed");
+  assert.equal(r.steps["build@2"]!.state, "done");
+  assert.equal(r.steps["merge@2"]!.state, "done");
+  assert.match(readFileSync(join(r.workspace!, "..", "fb-2.txt"), "utf8"), /merge said no/);
+  assert.equal(git(repo, "rev-parse", "main^"), tip);
+  assert.equal(git(repo, "rev-parse", "main^{tree}"), git(repo, "rev-parse", `${r.branch}^{tree}`));
+  assert.equal(readFileSync(join(repo, "new.txt"), "utf8"), "built2\n");
+  assert.equal(status(repo), "");
+});
+
+test("nothing to merge: the step is done and says so, never \"merged\"", async () => {
+  const home = tmpHome();
+  const repo = tmpRepo();
+  const tip = git(repo, "rev-parse", "main");
+  writeJill(home, "noop2", jill("true", "", "true"));
+  const r = await runNow("noop2", { home, cwd: repo });
+  assert.equal(r.state, "done", r.error);
+  assert.equal(git(repo, "rev-parse", "main"), tip);
+  const note = r.events.find((e) => e.type === "step-done" && e.step === "merge")!.note!;
+  assert.equal(note, "done: nothing to merge");
+
+  writeJill(home, "noop3", `timeout: 2s\n${jill("sleep 10", "", "true")}`);
+  const t = await runNow("noop3", { home, cwd: repo });
+  assert.equal(t.state, "stuck");
+  assert.match(t.error!, /^merge step: nothing to merge; total time limit/);
+  assert.doesNotMatch(t.error!, /merged into/);
 });
 
 test("N3: untracked files the run would overwrite -> needs-you, nothing merged, no loop", async () => {
