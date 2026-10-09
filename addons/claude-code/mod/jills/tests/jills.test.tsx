@@ -202,7 +202,7 @@ test('auto mode starts the run without a card or an unasked pane', async ($, on)
   expect(calls(w, 'go')).toHaveLength(1)
   expect(w.opened).toEqual([])
   expect(w.toasts).toContainEqual(expect.stringContaining('Jill fix-bug started (auto mode)'))
-  expect(w.statuses.at(-1)).toBe('Jills: fix-bug · build (round 2) · 2/4 steps')
+  expect(w.statuses.at(-1)).toBe('fix-bug · build (round 2) · 2/4 steps')
   expect(w.appended()).toContainEqual(expect.stringContaining('Jills run r1 started (Jill fix-bug)'))
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
@@ -247,7 +247,7 @@ test('a failed start shows a toast and opens nothing', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   await ui.press({ key: 'start' })
   expect(w.toasts).toEqual(['Jills: could not start (jills: no suggestion to start in this chat)'])
-  expect(w.statuses.at(-1)).toBe("Jills: couldn't start fix-bug: jills: no suggestion to start in this chat")
+  expect(w.statuses.at(-1)).toBe("couldn't start fix-bug: jills: no suggestion to start in this chat")
   expect(w.opened).toEqual([])
   expect(calls(w, 'status')).toHaveLength(0)
   expect(await ui.find({ type: 'Text', text: 'Jill fix-bug' })).toBeDefined() // the card stays
@@ -323,7 +323,7 @@ test('Stop runs jills stop <run>', async ($, on) => {
 test('the status row shows the Jill, current step and done/seen steps', async ($, on) => {
   const w = world(on)
   await started($, w)
-  expect(w.statuses.at(-1)).toBe('Jills: fix-bug · build (round 2) · 2/4 steps')
+  expect(w.statuses.at(-1)).toBe('fix-bug · build (round 2) · 2/4 steps')
 })
 
 test('a run that ends: toast, final status row, result line for Claude, status cleared after 60 s', async ($, on) => {
@@ -332,7 +332,7 @@ test('a run that ends: toast, final status row, result line for Claude, status c
   w.record = DONE
   await w.clock.advance(1500)
   expect(w.toasts).toContainEqual('Jill fix-bug done')
-  expect(w.statuses.at(-1)).toBe('Jills: fix-bug done')
+  expect(w.statuses.at(-1)).toBe('fix-bug done')
   expect(w.appended()).toContainEqual('[Jills] jills run r1 done: fix-bug | branch jills/fix-bug-r1 | merge: merged into main')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: 'merge: merged into main' })).toBeDefined()

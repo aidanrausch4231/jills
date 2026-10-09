@@ -99,11 +99,11 @@ export const GLYPH: Record<string, string> = {
 
 /** The status row: running, or the final word once ended. */
 export function statusText(run: JillsRun): string {
-  if (TERMINAL.has(run.state)) return `Jills: ${run.jill} ${endWord(run.state)}`
+  if (TERMINAL.has(run.state)) return `${run.jill} ${endWord(run.state)}`
   const now = run.steps.filter(s => s.state === 'running').map(s => s.label)
   const seen = run.steps.filter(s => s.state !== 'skipped' && s.state !== 'stale')
   const done = seen.filter(s => s.state === 'done').length
-  return `Jills: ${run.jill} · ${now.length ? now.join(', ') : run.state} · ${done}/${seen.length} steps`
+  return `${run.jill} · ${now.length ? now.join(', ') : run.state} · ${done}/${seen.length} steps`
 }
 
 /** "1m 05s" */

@@ -63,9 +63,9 @@ function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): bool
 }
 
 /** The main agent's instructions for a suggestion (manual: ask the user; auto: start it). */
-function agentText(auto: boolean, what: string, startCmd: string): string {
+function agentText(auto: boolean, what: string, startCmd: string | undefined): string {
   return auto
-    ? `[Jills] Jev matched ${what}. Auto mode is on: start it with the start_jill MCP tool (or \`${startCmd}\`), tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself unless the Jill says it merges.`
+    ? `[Jills] Jev matched ${what}. Auto mode is on: start it with the start_jill MCP tool${startCmd ? ` (or \`${startCmd}\`)` : ""}, tell the user you started it, then run \`jills wait <run-id>\` in the background and report the one-line result (branch + logs). Nothing merges itself unless the Jill says it merges.`
     : `[Jills] Jev suggests ${what}. Manual mode: do NOT start it yourself. Ask the user whether to run it; they can type /jills go to start it, /jills dismiss to quiet this chat, or /jills never to mute it for this repo.`;
 }
 
@@ -74,6 +74,7 @@ const branchOf = (repo?: string) => {
   try { return execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return "your branch"; }
 };
 
+const shown = (v: string) => { const one = String(v).replace(/\s+/g, " ").replace(/`/g, "'").trim(); return one.length > 200 ? `${one.slice(0, 199)}…` : one; }; // an input as text, never a command
 const settle = (s: SessionState) => void (s.lastSuggestion && (s.lastSuggestion.resolved = true));
 
 const defaultSuggest: SuggestPlugin = {
@@ -123,11 +124,11 @@ const defaultSuggest: SuggestPlugin = {
     s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false, inputs };
     s.suggested.push(j.name);
     saveSession(home, s);
-    const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+    const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${shown(v)}`).join(", ")}` : "";
     const warning = [j.worktree ? "" : NO_WORKTREE_NOTE, j.merges ? `merges into ${branchOf(o.repo)} when done` : ""].filter(Boolean).join("; ") || undefined;
     const warnText = warning ? ` (${warning})` : "";
     const text = `Jev: this looks like a job for Jill "${j.name}"${inputText}: ${j.description}${warnText}`;
-    const startCmd = `jills start ${j.name}${Object.entries(inputs).map(([k, v]) => ` --input ${k}=${JSON.stringify(v)}`).join("")} --session ${o.session}`;
+    const startCmd = /^[A-Za-z0-9._-]{1,80}$/.test(o.session) ? `jills go --session ${o.session}` : undefined; // never input values (chat text): go reuses the saved ones
     const agentContext = agentText(auto, `Jill "${j.name}"${inputText} (confidence ${m.confidence})${warnText}`, startCmd);
     return { action: "suggest", reason: "new task fits a saved Jill", jill: j.name, description: j.description, inputs, ...base, auto, text, agentContext, worktree: j.worktree, ...(warning ? { warning } : {}) };
   },

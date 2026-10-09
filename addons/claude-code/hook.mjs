@@ -93,7 +93,10 @@ export function hookOutput(s, session, cwd) {
     ? "Auto mode: Claude will start it. /jills quiet to pause, /jills dismiss for this chat."
     : "Type /jills go to start it, /jills dismiss to quiet this chat, /jills never to mute it here.";
   const extra = [
-    `Chat session id for Jills: ${session} (pass it as \`session\` to start_jill or \`--session ${session}\` to the jills CLI).`,
+    // The id goes into a command only when it is plain (it comes from Claude Code, but never trust it into a shell).
+    /^[A-Za-z0-9._-]{1,80}$/.test(session)
+      ? `Chat session id for Jills: ${session} (pass it as \`session\` to start_jill or \`--session ${session}\` to the jills CLI).`
+      : `Chat session id for Jills: ${JSON.stringify(session)} (pass it as \`session\` to start_jill).`,
   ];
   if (cwd) extra.push(`Repo for the run: ${cwd} (pass it as \`repo\` to start_jill or \`--repo\` to the jills CLI).`);
   return {

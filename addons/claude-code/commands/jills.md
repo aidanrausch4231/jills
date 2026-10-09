@@ -11,7 +11,7 @@ then tell the user the command's output in one or two short lines. Do nothing el
 
 | First word | Command to run |
 |---|---|
-| `go` (optional Jill name after it) | `jills go [<jill>] --session ${CLAUDE_SESSION_ID} --repo "$PWD"` (Jills reuses the inputs it saved with the last suggestion; add `--input name=value` only for values the user typed after `go`) |
+| `go` (optional Jill name after it) | `jills go [<jill>] --session ${CLAUDE_SESSION_ID} --repo "$PWD"` (Jills reuses the inputs it saved with the last suggestion; add `--input 'name=value'` only for values the user typed after `go`, each in single quotes with any `'` inside written as `'\''`; never double quotes, so no `` ` `` or `$(` in a value can run) |
 | `dismiss` | `jills dismiss --session ${CLAUDE_SESSION_ID}` |
 | `never` (optional Jill name after it) | `jills never --session ${CLAUDE_SESSION_ID} --repo "$PWD"` (add `--jill <name>` when a name was given; without one it mutes the last suggested Jill) |
 | `quiet` | `jills quiet --session ${CLAUDE_SESSION_ID}` |

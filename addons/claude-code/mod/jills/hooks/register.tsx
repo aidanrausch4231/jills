@@ -100,7 +100,7 @@ async function start($: $, auto: boolean, name: string) {
     $.ui.toast(`Jills: could not start (${why})`)
     const token = `start-failed:${await $.clock.now()}`
     live.statusRun = token
-    $.ui.status(`Jills: couldn't start ${name}: ${why}`)
+    $.ui.status(`couldn't start ${name}: ${why}`)
     $.clock.after(FINAL_STATUS_MS, () => {
       if (live.statusRun === token) $.ui.status(undefined)
     })
@@ -117,7 +117,7 @@ async function start($: $, auto: boolean, name: string) {
     void $.ui.open({ id: PANE, title: `Jill ${jill}` })
   }
   live.statusRun = undefined
-  $.ui.status(`Jills: ${jill} · starting · 0/0 steps`)
+  $.ui.status(`${jill} · starting · 0/0 steps`)
   await tellClaude($, `Jills run ${id} started (Jill ${jill}). The Jills mod shows its progress and will add the result to this chat when it ends; do not start it again or wait on it.`)
   follow($, id)
 }

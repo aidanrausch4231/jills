@@ -19,11 +19,11 @@ A Claude Code mod (a plugin with a function-hooks module, early-access API). It 
   In auto mode the run starts without a card or pane: status row, toast and a line for Claude; `/jills-panel` shows it.
   When the Jill has a required input the suggestion left empty, the card says `needs: <names> — use /jills go name=value`
   and has no Start (auto mode then shows the card instead of starting). A start that fails keeps the card and shows
-  `Jills: couldn't start <jill>: <error>` in the status row for 60 s, besides the toast.
+  `couldn't start <jill>: <error>` in the status row for 60 s, besides the toast.
 - **Progress pane** `jills-run`, opened by Start: Jill, state, elapsed time, one row per step instance in start
   order (`build@2` shows as "build (round 2)", nested steps indented), merge result, error or needs-you reason,
   branch, and **Stop** / **Close**. `/jills-panel` reopens it for the latest run of this session.
-- **Status row** `Jills: <jill> · <current step> · <done>/<seen> steps`, then the final word for 60 s.
+- **Status row** `<jill> · <current step> · <done>/<seen> steps`, then the final word for 60 s. Claude Code shows it after the plugin name (`jills:`); the API has no style choice, so it keeps the engine's icon.
 - **On end**: a toast `Jill <name> <state>` and the `jills wait` result line (plus the merge note) added to the
   chat for Claude.
 
