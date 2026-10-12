@@ -5,7 +5,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { JillsCard, JillsRun } from '../types'
-import { GLYPH, TERMINAL, cardFrom, clip, elapsed, endWord, isPersonPrompt, runView, statusText } from './view'
+import { GLYPH, TERMINAL, cardFrom, clip, elapsed, endWord, isPersonPrompt, jevOffText, runView, statusText } from './view'
 import type { Suggestion } from './view'
 
 type $ = EngineInterface
@@ -55,6 +55,7 @@ const live = {
   poll: undefined as Poll | undefined,
   paneOpen: false,
   statusRun: undefined as string | undefined, // the run whose final word the status row shows
+  jevOffShown: false, // the "Jev off" reason shows once per session
 }
 
 async function suggest($: $, text: string, seq: number) {
@@ -71,6 +72,17 @@ async function suggest($: $, text: string, seq: number) {
   })
   const s = json<Suggestion>(out.stdout)
   if (seq !== live.asked || !s) return
+  const off = jevOffText(s)
+  if (off && !live.jevOffShown && !live.poll) {
+    live.jevOffShown = true
+    const token = `jev-off:${await $.clock.now()}`
+    live.statusRun = token
+    $.ui.status(off)
+    $.clock.after(FINAL_STATUS_MS, () => {
+      if (live.statusRun === token) $.ui.status(undefined)
+    })
+    return
+  }
   const found = cardFrom(s)
   if (!found) return
   const shown = { ...found, needs: await missingInputs($, found) }

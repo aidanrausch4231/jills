@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { cpSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../mcp.js";
 import { tmpHome, tmpRepo } from "../../../test/helpers.js";
+import { JEV_TEST_CONFIG, keywordJev, resetKeywordJev } from "../../../test/jev-fixtures.js";
+
+after(resetKeywordJev);
 
 const root = new URL("../../../../", import.meta.url).pathname;
 
@@ -23,7 +26,8 @@ function textOf(r: unknown): string {
 }
 
 test("MCP lists the five tools and runs list/suggest/start/status/wait", async () => {
-  const home = tmpHome();
+  const home = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ hello: ["hello"] });
   cpSync(join(root, "examples", "hello"), join(home, "jills", "hello"), { recursive: true });
   const { client, server } = await connect(home);
   const tools = (await client.listTools()).tools.map((t) => t.name).sort();

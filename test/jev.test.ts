@@ -12,8 +12,8 @@ const KEY = "sk-test-not-real-123";
 
 function homeWithJills(config = "threshold: 0.6") {
   const home = tmpHome(`jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_JEV_KEY, ${config}}\n`);
-  writeJill(home, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\nkeywords: [bug, broken]\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
-  writeJill(home, "research", "description: Research a question\nwhen: user asks how something works\nkeywords: [research]\nsteps:\n  a: {run: echo}");
+  writeJill(home, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
+  writeJill(home, "research", "description: Research a question\nwhen: user asks how something works\nsteps:\n  a: {run: echo}");
   return home;
 }
 const input = (home: string, over: Partial<MatchInput> = {}): MatchInput => ({
@@ -22,8 +22,8 @@ const input = (home: string, over: Partial<MatchInput> = {}): MatchInput => ({
   already: [],
   config: loadConfig(home),
   jills: [
-    { name: "fix-bug", description: "Fix a bug", when: "user reports a bug", inputs: ["task"], keywords: [], required: ["task"] },
-    { name: "research", description: "Research a question", when: "user asks how something works", inputs: [], keywords: [] },
+    { name: "fix-bug", description: "Fix a bug", when: "user reports a bug", inputs: ["task"], required: ["task"] },
+    { name: "research", description: "Research a question", when: "user asks how something works", inputs: [] },
   ],
   ...over,
 });
@@ -137,36 +137,50 @@ test("inputs: only the one required input with no default; refers_back adds the 
   assert.deepEqual(parseSystemOne(systemOne("new:fix-bug", 0.9), two, 0.5)!.inputs, {});
 });
 
-test("no key -> undefined without any HTTP call; keywords answer", async () => {
+const unavailable = async (home: string, over: Partial<MatchInput> = {}) => {
+  const r = await jevMatcher.match(input(home, over));
+  assert.equal(r?.label, "talk");
+  assert.equal(r?.confidence, 0);
+  assert.ok(!JSON.stringify(r).includes(KEY), "the key is never in the answer");
+  return r?.note;
+};
+
+test("no key -> no HTTP call, no suggestion, and the reason says which variable", async () => {
   const home = homeWithJills();
   const calls: JevCall[] = [];
-  setJevFetch(fakeFetch(systemOne("talk", 1), calls));
-  assert.equal(await jevMatcher.match(input(home)), undefined);
+  setJevFetch(fakeFetch(systemOne("new:fix-bug", 1), calls));
+  assert.equal(await unavailable(home), "Jev unavailable: JILLS_TEST_JEV_KEY not set");
   const s = await suggest({ home, session: "nokey", message: "there is a bug in checkout", repo: tmpRepo() });
   assert.equal(calls.length, 0);
-  assert.equal(s.matcher, "keywords");
-  assert.equal(s.jill, "fix-bug");
+  assert.equal(s.action, "quiet");
+  assert.equal(s.reason, "Jev unavailable: JILLS_TEST_JEV_KEY not set");
+  assert.equal(s.jill, undefined);
 });
 
-test("network error, HTTP 429/500 or a bad reply -> undefined, keywords answer", async () => {
+test("network error, timeout, HTTP 429/500 or a bad reply -> no suggestion with the reason", async () => {
   const home = homeWithJills();
   process.env.JILLS_TEST_JEV_KEY = KEY;
   setJevFetch(async () => {
     throw new Error("ECONNREFUSED");
   });
+  assert.equal(await unavailable(home), "Jev unavailable: network error");
   const s1 = await suggest({ home, session: "neterr", message: "please research the cache", repo: tmpRepo() });
-  assert.equal(s1.matcher, "keywords");
-  assert.equal(s1.jill, "research");
+  assert.equal(s1.action, "quiet");
+  assert.equal(s1.reason, "Jev unavailable: network error");
+  setJevFetch(async () => {
+    throw Object.assign(new Error("slow"), { name: "TimeoutError" });
+  });
+  assert.equal(await unavailable(home), "Jev unavailable: timeout");
   for (const status of [429, 500]) {
     setJevFetch(fakeFetch({ error: "x" }, [], status));
-    assert.equal(await jevMatcher.match(input(home)), undefined, String(status));
+    assert.equal(await unavailable(home), `Jev unavailable: HTTP ${status}`);
   }
   for (const bad of [{}, { answers: {} }, { answers: { route: { choice: "talk" } } }, { answers: { route: { choice: "talk", probabilities: { talk: 1 } } } }, null]) {
     setJevFetch(fakeFetch(bad));
-    assert.equal(await jevMatcher.match(input(home)), undefined, JSON.stringify(bad));
+    assert.equal(await unavailable(home), "Jev unavailable: bad reply", JSON.stringify(bad));
   }
   setJevFetch(async () => ({ ok: true, status: 200, json: async () => { throw new Error("bad json"); } }));
-  assert.equal(await jevMatcher.match(input(home)), undefined);
+  assert.equal(await unavailable(home), "Jev unavailable: network error");
 });
 
 test("same route stays quiet", async () => {

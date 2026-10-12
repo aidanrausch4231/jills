@@ -4,6 +4,7 @@ import { cpSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
+import { jevServer } from "./jev-fixtures.js";
 
 const root = new URL("../../", import.meta.url).pathname;
 const cli = join(root, "dist", "src", "cli.js");
@@ -16,8 +17,11 @@ function jills(home: string, args: string[], opts: { cwd?: string; input?: strin
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
 
-test("CLI exit codes and core commands", () => {
-  const home = tmpHome();
+test("CLI exit codes and core commands", async (t) => {
+  const fake = await jevServer({ hello: ["hello"] });
+  process.env.JILLS_TEST_JEV_KEY = "sk-test-not-real";
+  t.after(() => { fake.stop(); delete process.env.JILLS_TEST_JEV_KEY; });
+  const home = tmpHome(`jev: {url: ${fake.url}, key_env: JILLS_TEST_JEV_KEY}\n`);
   cpSync(join(root, "examples", "hello"), join(home, "jills", "hello"), { recursive: true });
   writeJill(home, "boxed", "box: docker\nsteps:\n  a: {run: echo}");
   writeJill(home, "fails", "worktree: false\nsteps:\n  a: {run: exit 9}");

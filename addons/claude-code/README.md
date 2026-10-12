@@ -49,7 +49,7 @@ Three pieces, none with Jills logic of its own:
 
 | File | What it does |
 |---|---|
-| `hook.mjs` | `UserPromptSubmit` hook. Sends each new prompt (plus the last 3 transcript turns) to the core `suggest`. On a suggestion it prints the documented hook JSON: `systemMessage` (shown to you) and `hookSpecificOutput.additionalContext` (added to Claude's context). Otherwise it prints nothing. It never blocks a prompt. It gives up only after the Jev request timeout (`jev.timeout_ms`, default 8 s) plus 3 s, so a slow Jev ends in Jev's own timeout and the keywords fallback. |
+| `hook.mjs` | `UserPromptSubmit` hook. Sends each new prompt (plus the last 3 transcript turns) to the core `suggest`. On a suggestion it prints the documented hook JSON: `systemMessage` (shown to you) and `hookSpecificOutput.additionalContext` (added to Claude's context). Otherwise it prints nothing. It never blocks a prompt. It gives up only after the Jev request timeout (`jev.timeout_ms`, default 8 s) plus 3 s, so a slow Jev ends in Jev's own timeout (no suggestion). |
 | `commands/jills.md` | `/jills go \| dismiss \| never \| quiet \| on \| status \| list \| auto on\|off`. Claude runs the matching `jills` CLI command with the chat's `${CLAUDE_SESSION_ID}`; after `go` it runs `jills wait <run>` in the background and reports the result. |
 | `settings.snippet.json` | The hook entry to merge into `~/.claude/settings.json`. |
 
@@ -81,7 +81,7 @@ The hook skips prompts that start with `/`, `!` or `<` (system events such as `<
 5. Install the slash command:
    `mkdir -p ~/.claude/commands && cp commands/jills.md ~/.claude/commands/jills.md`
 6. For Jev itself, export the key named by `jev.key_env` (default `TYPESAFE_API_KEY`, a TypeSafe System One key) in the shell that
-   starts Claude Code. Without it the hook uses the `keywords:` fallback.
+   starts Claude Code. Without it there is no suggestion (the mod shows "jills: Jev off — ..." once per session for 60 s).
 
 Env knobs: `JILLS_HOME` (default `~/.jills`), `JILLS_LIB` (core entry, default `../../dist/src/index.js`),
 `JILLS_HOOK_TIMEOUT_MS` (can only raise the give-up time above `jev.timeout_ms` + 3000; keep the hook `timeout` in

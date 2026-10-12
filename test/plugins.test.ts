@@ -18,7 +18,7 @@ test("single-file plug-ins load from config and go first; bad versions are refus
   const home = tmpHome(`plugins: [${file}]\n`);
   const set = await loadPlugins(loadConfig(home));
   assert.equal(set.runners[0]!.name, "upper");
-  assert.deepEqual(set.matchers.map((m) => m.name), ["jev", "keywords"]);
+  assert.deepEqual(set.matchers.map((m) => m.name), ["jev"]);
   // a step with an unknown field + run: is picked up by the plug-in that claims it
   writeJill(home, "plug", "worktree: false\nsteps:\n  a: {run: 'exit 1', upper: shout}");
   const ws = tmp();

@@ -2,7 +2,6 @@
 name: hello
 description: Write a hello file in a fresh worktree; the smoke test for Jills.
 when: The user asks to say hello, greet someone, or test that Jills works.
-keywords: [hello, greet, say hi]
 inputs:
   - name: who
     description: Who to greet

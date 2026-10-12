@@ -186,6 +186,21 @@ test('the next person prompt removes the card', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: 'Jill fix-bug' })).toBeUndefined()
 })
 
+test('Jev unavailable: the reason shows once in the status row for 60 s, no card', async ($, on) => {
+  const w = world(on)
+  w.suggestion = { action: 'quiet', reason: 'Jev unavailable: TYPESAFE_API_KEY not set', auto: false }
+  await $.prompt.submit(person('fix the crash'))
+  await w.clock.settle()
+  expect(w.statuses.at(-1)).toBe('jills: Jev off — TYPESAFE_API_KEY not set')
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: 'Jill fix-bug' })).toBeUndefined()
+  await w.clock.advance(60_000)
+  expect(w.statuses.at(-1)).toBeUndefined()
+  await $.prompt.submit(person('fix it again'))
+  await w.clock.settle()
+  expect(w.statuses.filter(x => x?.startsWith('jills: Jev off'))).toHaveLength(1)
+})
+
 test('slash commands, shell escapes, system events and non-person prompts never call suggest', async ($, on) => {
   const w = world(on)
   for (const text of ['/jills go', '!ls', '<task-notification>done</task-notification>', '   ']) await $.prompt.submit(person(text))
@@ -258,7 +273,7 @@ test('a failed start shows a toast and opens nothing', async ($, on) => {
 
 test('a suggestion without a required input shows what it needs and no Start', async ($, on) => {
   const w = world(on)
-  w.suggestion = { ...SUGGESTION, inputs: {}, matcher: 'keywords' }
+  w.suggestion = { ...SUGGESTION, inputs: {}, matcher: 'jev' }
   w.listed = [{ name: 'fix-bug', inputs: ['issue', 'notes'], required: ['issue'] }]
   await $.prompt.submit(person('fix the crash'))
   await w.clock.settle()

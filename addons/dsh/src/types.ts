@@ -83,7 +83,7 @@ export interface JillsCard {
   auto: boolean
   /** Confidence Jev reported (0..1); 0 when unknown. */
   confidence: number
-  /** Matcher that answered (jev or keywords). */
+  /** Matcher that answered (jev). */
   matcher: string
   /** Warning shown on the card, e.g. "no worktree: edits your checkout directly"; empty when none. */
   warning: string

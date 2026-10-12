@@ -113,13 +113,13 @@ async function loadLib() {
   return import(pathToFileURL(entry).href);
 }
 
-/** Extra time past the Jev request timeout for config, keywords fallback and session writes. */
+/** Extra time past the Jev request timeout for config and session writes. */
 export const HOOK_MARGIN_MS = 3000;
 
 /**
  * How long the hook waits for the core before it gives up. It always exceeds the
  * Jev request timeout (config jev.timeout_ms, default 8000) by HOOK_MARGIN_MS, so a
- * slow Jev still ends in Jev's own timeout and the keywords fallback, not a silent
+ * slow Jev still ends in Jev's own timeout ("Jev unavailable: timeout"), not a silent
  * hook give-up. JILLS_HOOK_TIMEOUT_MS can only raise it.
  */
 export function giveUpMs(jevTimeoutMs, envValue = process.env.JILLS_HOOK_TIMEOUT_MS) {

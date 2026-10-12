@@ -1,5 +1,5 @@
 // Tests for the Claude Code hook. Run after `pnpm build`: node --test 'addons/claude-code/test/*.test.mjs'
-// Temp JILLS_HOME, no network (no TypeSafe key -> keywords fallback).
+// Temp JILLS_HOME, a fake Jev on localhost (separate process), no real network.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -19,6 +19,26 @@ const NO_DIST = existsSync(DIST) ? false : `dist/ missing (${DIST}): run pnpm bu
 /** A test that needs the built core in dist/. */
 const distTest = (name, fn) => test(name, { skip: NO_DIST }, fn);
 const dirs = [];
+// A fake Jev (System One shape) in its own process: the hook tests block on spawnSync. A message with
+// "bug" or "crash" routes to the fix-bug Jill, anything else is talk.
+const SERVER_JS = `
+const http = require("node:http");
+const answer = (route) => ({ model: "jev-1.13.0", answers: {
+  route: { type: "choice", choice: route, probabilities: { [route]: 0.95, other: 0.05 }, confidence: 0.9 },
+  action: { type: "noul", noul: 0.95 }, refers_back: { type: "noul", noul: 0.05 } } });
+http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    const said = String(JSON.parse(body).state.latest_message).toLowerCase();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(answer(/bug|crash/.test(said) ? "new:fix-bug" : "talk")));
+  });
+}).listen(0, "127.0.0.1", function () { console.log(this.address().port); });
+`;
+const fakeJev = spawn(process.execPath, ["-e", SERVER_JS], { stdio: ["ignore", "pipe", "inherit"] });
+const FAKE_URL = `http://127.0.0.1:${await new Promise((resolve) => fakeJev.stdout.once("data", (d) => resolve(String(d).trim())))}/v1/systemone`;
+after(() => fakeJev.kill());
 after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 function tmp(prefix) {
@@ -32,10 +52,11 @@ function setup(config = "") {
   mkdirSync(join(home, "agents"), { recursive: true });
   const jill = join(home, "jills", "fix-bug");
   mkdirSync(jill, { recursive: true });
-  writeFileSync(join(home, "config.yml"), `agent_paths: [${join(home, "agents")}]\n${config}`);
+  const jev = config.includes("jev:") ? "" : `jev: {url: ${FAKE_URL}, key_env: JILLS_CC_KEY}\n`;
+  writeFileSync(join(home, "config.yml"), `agent_paths: [${join(home, "agents")}]\n${jev}${config}`);
   writeFileSync(
     join(jill, "JILL.md"),
-    "---\nname: fix-bug\ndescription: Find and fix a bug\nkeywords: [bug, crash]\nworktree: false\nsteps:\n  a: {run: echo hi}\n---\n",
+    "---\nname: fix-bug\ndescription: Find and fix a bug\nworktree: false\nsteps:\n  a: {run: echo hi}\n---\n",
   );
   const repo = tmp("jills-cc-repo-");
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
@@ -43,7 +64,8 @@ function setup(config = "") {
 }
 
 function runHook(home, input, extraEnv = {}) {
-  const env = { ...process.env, JILLS_HOME: home, ...extraEnv };
+  const env = { JILLS_CC_KEY: "sk-test-not-real", ...process.env, JILLS_HOME: home, ...extraEnv };
+  for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   delete env.OPENROUTER_API_KEY;
   delete env.TYPESAFE_API_KEY;
   const r = spawnSync(process.execPath, [HOOK], {
@@ -73,6 +95,14 @@ distTest("no match: prints nothing, exit 0", () => {
   assert.equal(r.code, 0);
   assert.equal(r.out, "");
   assert.match(r.err, /quiet: just talk/);
+});
+
+distTest("Jev unavailable (no key): prints nothing, exit 0, the reason goes to stderr in debug", () => {
+  const { home, repo } = setup();
+  const r = runHook(home, hookInput(repo, "there is a crash bug"), { JILLS_CC_KEY: undefined, JILLS_HOOK_DEBUG: "1" });
+  assert.equal(r.code, 0);
+  assert.equal(r.out, "");
+  assert.match(r.err, /Jev unavailable: JILLS_CC_KEY not set/);
 });
 
 distTest("manual suggestion: systemMessage for the user, additionalContext for Claude", () => {
@@ -208,7 +238,7 @@ distTest("a slow Jev reply inside jev.timeout_ms still reaches the user (hook do
     const [code] = await once(child, "exit");
     assert.equal(code, 0);
     const o = JSON.parse(out.trim());
-    assert.match(o.systemMessage, /Jill "fix-bug"/, "Jev's (not keywords') answer arrived");
+    assert.match(o.systemMessage, /Jill "fix-bug"/, "Jev's answer arrived");
   } finally {
     jev.close();
   }

@@ -2,7 +2,6 @@
 name: fix-jill-bug
 description: Research a bug, fix it, loop review until clean, then squash-merge the fix into your branch.
 when: The user reports a bug, wants it fixed and reviewed, and wants the fix merged into their branch when it is clean.
-keywords: [fix and merge, fix it and merge, fix bug and merge]
 inputs:
   - name: task
     description: The bug, with how to reproduce it

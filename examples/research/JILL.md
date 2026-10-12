@@ -2,7 +2,6 @@
 name: research
 description: Three read-only explorers look at a question in parallel, then a researcher writes one cited answer.
 when: The user asks how something works in the codebase, where a flow lives, or wants a researched answer before changing code.
-keywords: [research, investigate, how does, where is, explore]
 inputs:
   - name: task
     description: The question to research

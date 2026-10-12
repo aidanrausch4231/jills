@@ -26,7 +26,7 @@ async function context(o: BaseOpts = {}): Promise<Ctx> {
   return { config, plugins: await loadPlugins(config), jills, lookup: (n) => jills.get(n) };
 }
 
-const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), keywords: j.keywords, required: j.inputs.filter((i) => i.required && i.default === undefined).map((i) => i.name) });
+const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), required: j.inputs.filter((i) => i.required && i.default === undefined).map((i) => i.name) });
 
 /** List saved Jills (first match per name across jill_paths). */
 export async function listJills(o: BaseOpts = {}): Promise<(JillSummary & { path: string })[]> {

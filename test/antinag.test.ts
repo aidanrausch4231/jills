@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { chat, never, suggest, start, wait, setAuto } from "../src/api.js";
 import { loadSession } from "../src/plugins/suggest-default.js";
 import { loadConfig } from "../src/config.js";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
+import { JEV_TEST_CONFIG, keywordJev, resetKeywordJev } from "./jev-fixtures.js";
+
+after(resetKeywordJev);
 
 function setup() {
-  const home = tmpHome();
-  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\nworktree: false\nsteps:\n  a: {run: sleep 3}");
-  writeJill(home, "docs", "description: Write docs\nkeywords: [docs]\nworktree: false\nsteps:\n  a: {run: echo}");
+  const home = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ "fix-bug": ["bug"], docs: ["docs"] });
+  writeJill(home, "fix-bug", "description: Fix a bug\nworktree: false\nsteps:\n  a: {run: sleep 3}");
+  writeJill(home, "docs", "description: Write docs\nworktree: false\nsteps:\n  a: {run: echo}");
   return { home, repo: tmpRepo() };
 }
 

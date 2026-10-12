@@ -67,13 +67,6 @@ test("a matcher plug-in's undeclared inputs are dropped centrally", async () => 
   assert.deepEqual(s.inputs, { who: "Bo" });
 });
 
-test("keyword matches carry no inputs", async () => {
-  const home = helloHome();
-  const s = await suggest({ home, session: "f2-3", message: "please say hello", repo: tmpRepo() });
-  assert.equal(s.matcher, "keywords");
-  assert.deepEqual(s.inputs, {});
-});
-
 // ---------------------------------------------------------------- 3. go uses saved inputs
 
 test("jills go with no --input uses the last suggestion's saved inputs (CLI, new process)", async () => {

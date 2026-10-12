@@ -5,7 +5,7 @@ import { after, afterEach, test } from "node:test";
 import { runNow, start, status, stop, suggest } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
 import { setJevFetch } from "../src/plugins/matcher-jev.js";
-import { fakeFetch, systemOne, type JevCall } from "./jev-fixtures.js";
+import { fakeFetch, JEV_TEST_CONFIG, keywordJev, resetKeywordJev, systemOne, type JevCall } from "./jev-fixtures.js";
 import { loadRecord } from "../src/runs.js";
 import { renderShellTemplate } from "../src/template.js";
 import { sleep } from "../src/util.js";
@@ -76,9 +76,10 @@ test("shell templates are env references, never values; backticks are refused", 
 // ---------------------------------------------------------------- P2: ignored -> wait for new task
 
 function antiNagHome() {
-  const home = tmpHome();
-  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\nworktree: false\nsteps:\n  a: {run: echo}");
-  writeJill(home, "docs", "description: Write docs\nkeywords: [docs]\nworktree: false\nsteps:\n  a: {run: echo}");
+  const home = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ "fix-bug": ["bug"], docs: ["docs"] });
+  writeJill(home, "fix-bug", "description: Fix a bug\nworktree: false\nsteps:\n  a: {run: echo}");
+  writeJill(home, "docs", "description: Write docs\nworktree: false\nsteps:\n  a: {run: echo}");
   return home;
 }
 
@@ -99,12 +100,12 @@ test("ignored suggestion: the same Jill stays quiet after the rate-limit window"
 
 afterEach(() => {
   setJevFetch(undefined);
-  delete process.env.JILLS_TEST_JEV_KEY;
+  resetKeywordJev();
 });
 
 test("ignored suggestion: a rewording stays quiet, a new task of the same kind comes back (Jev p(same))", async () => {
   const home = tmpHome("jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_JEV_KEY, threshold: 0.7}\n");
-  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\ninputs: [{name: task, required: true}]\nworktree: false\nsteps:\n  a: {run: echo}");
+  writeJill(home, "fix-bug", "description: Fix a bug\ninputs: [{name: task, required: true}]\nworktree: false\nsteps:\n  a: {run: echo}");
   process.env.JILLS_TEST_JEV_KEY = "sk-test-not-real";
   let reply: unknown = systemOne("new:fix-bug", 0.9);
   const calls: JevCall[] = [];
@@ -126,20 +127,6 @@ test("ignored suggestion: a rewording stays quiet, a new task of the same kind c
   const body = JSON.parse(calls.at(-1)!.init.body);
   assert.deepEqual(body.state.last_suggested_task, { jill: "fix-bug", message: "login gives 500" });
   assert.match(body.questions.route.criteria.same, /rewords a task already suggested \(even if the user ignored it\)/);
-});
-
-test("ignored suggestion, keywords matcher: a rewording stays quiet, different words bring the Jill back", async () => {
-  const home = tmpHome();
-  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [login, crashes]\nworktree: false\nsteps:\n  a: {run: echo}");
-  const repo = tmpRepo();
-  const say = (m: string) => suggest({ home, session: "ign-kw", message: m, repo });
-  assert.equal((await say("login gives 500")).action, "suggest");
-  await say("ok");
-  await say("ok");
-  assert.equal((await say("login still gives 500")).reason, "ignored; waiting for a new task");
-  const fresh = await say("signup page crashes on submit");
-  assert.equal(fresh.action, "suggest");
-  assert.equal(fresh.matcher, "keywords");
 });
 
 // ---------------------------------------------------------------- P2: merge-back with a dirty parent

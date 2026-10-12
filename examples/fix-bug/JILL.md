@@ -2,7 +2,6 @@
 name: fix-bug
 description: Research a bug, fix it on a Jills branch, then get an independent review.
 when: The user reports a bug or failing behaviour and wants it fixed.
-keywords: [fix bug, bug, broken, failing, regression]
 inputs:
   - name: task
     description: The bug, with how to reproduce it

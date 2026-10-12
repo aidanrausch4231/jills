@@ -26,7 +26,7 @@ export interface StepDef {
 }
 
 export interface JillDef {
-  name: string; description: string; when?: string; keywords: string[];
+  name: string; description: string; when?: string;
   inputs: InputDef[];
   steps: StepDef[];
   worktree: boolean;
@@ -40,7 +40,7 @@ export interface JillDef {
   extra: Record<string, unknown>;
 }
 
-const JILL_KEYS = ["name", "description", "when", "keywords", "inputs", "steps", "worktree", "box", "machine", "timeout"];
+const JILL_KEYS = ["name", "description", "when", "inputs", "steps", "worktree", "box", "machine", "timeout"];
 const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs", "on_fail", "merges"];
 export const MAX_COPIES = 16;
 export const MAX_DEPTH = 4;
@@ -143,7 +143,6 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
     name,
     description: String(data.description ?? ""),
     when: str(data.when),
-    keywords: list(data.keywords),
     inputs,
     steps,
     worktree: data.worktree === undefined || data.worktree === true,

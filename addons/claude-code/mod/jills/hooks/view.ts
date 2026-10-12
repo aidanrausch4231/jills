@@ -13,12 +13,19 @@ export function isPersonPrompt(text: string, originKind: string): boolean {
 /** `jills suggest --json` output, as far as the mod reads it. */
 export type Suggestion = {
   action?: string
+  reason?: string
   jill?: string
   description?: string
   inputs?: Record<string, unknown>
   auto?: boolean
   worktree?: boolean
   warning?: string
+}
+
+/** "Jev off — TYPESAFE_API_KEY not set" when suggest says Jev was unavailable, else undefined. */
+export function jevOffText(s: Suggestion): string | undefined {
+  const m = /^Jev unavailable: (.+)$/.exec(s.reason ?? '')
+  return s.action === 'quiet' && m ? `jills: Jev off — ${clip(m[1]!, 120)}` : undefined
 }
 
 export function cardFrom(s: Suggestion): JillsCard | null {

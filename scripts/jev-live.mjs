@@ -9,9 +9,9 @@ if (!process.env.TYPESAFE_API_KEY) {
 }
 const config = loadConfig(process.env.JILLS_HOME ?? "/nonexistent-jills-home");
 const jills = [
-  { name: "fix-bug", description: "Find and fix a bug in the repo, with a test", when: "The user reports something broken or a bug to fix", inputs: ["task"], keywords: [], required: ["task"] },
-  { name: "research", description: "Research how something works and write a short report", when: "The user asks to investigate or compare options and wants a written result", inputs: ["topic"], keywords: [], required: ["topic"] },
-  { name: "release-notes", description: "Draft release notes from the merged PRs", when: "The user wants release notes or a changelog", inputs: [], keywords: [] },
+  { name: "fix-bug", description: "Find and fix a bug in the repo, with a test", when: "The user reports something broken or a bug to fix", inputs: ["task"], required: ["task"] },
+  { name: "research", description: "Research how something works and write a short report", when: "The user asks to investigate or compare options and wants a written result", inputs: ["topic"], required: ["topic"] },
+  { name: "release-notes", description: "Draft release notes from the merged PRs", when: "The user wants release notes or a changelog", inputs: [] },
 ];
 const earlier = [
   { role: "user", text: "The checkout total shows 10.01 instead of 10.00 for two items." },

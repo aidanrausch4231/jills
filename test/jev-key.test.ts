@@ -86,7 +86,7 @@ test("Jev matcher tolerates a lookup that throws synchronously or returns a plai
   const calls: Call[] = [];
   setJevFetch(fetchInto(calls));
   const config = loadConfig(home());
-  const base: MatchInput = { message: "the login page is broken", recent: [], jills: [{ name: "fix-bug", description: "Fix a bug", inputs: ["task"], keywords: [] }], already: [], config };
+  const base: MatchInput = { message: "the login page is broken", recent: [], jills: [{ name: "fix-bug", description: "Fix a bug", inputs: ["task"] }], already: [], config };
   await jevMatcher.match({ ...base, jevKey: () => { throw new Error("sync boom"); } });
   await jevMatcher.match({ ...base, jevKey: () => "  sk-plain-not-real  " });
   assert.deepEqual(calls.map((c) => c.init.headers.authorization), [`Bearer ${ENV}`, "Bearer sk-plain-not-real"]);
@@ -99,11 +99,11 @@ test("a non-TypeSafe key_env with the TypeSafe url sends nothing (fetch never ca
     const calls: Call[] = [];
     setJevFetch(fetchInto(calls));
     const base: MatchInput = { message: "the login page is broken", recent: [], jills: [], already: [], config: loadConfig(h) };
-    assert.equal(await jevMatcher.match(base), undefined);
-    assert.equal(await jevMatcher.match({ ...base, jevKey: () => "sk-or-from-lookup" }), undefined);
+    assert.match(String((await jevMatcher.match(base))?.note), /^Jev unavailable: /);
+    assert.match(String((await jevMatcher.match({ ...base, jevKey: () => "sk-or-from-lookup" }))?.note), /^Jev unavailable: /);
     const other = tmpHome("jev: {key_env: MY_OTHER_KEY}\n");
     process.env.MY_OTHER_KEY = "x";
-    assert.equal(await jevMatcher.match({ ...base, config: loadConfig(other) }), undefined);
+    assert.match(String((await jevMatcher.match({ ...base, config: loadConfig(other) }))?.note), /^Jev unavailable: /);
     delete process.env.MY_OTHER_KEY;
     assert.equal(calls.length, 0);
   } finally {
@@ -117,10 +117,10 @@ test("a bad url returns undefined without a fetch or a key lookup; a non-TypeSaf
   process.env.JILLS_TEST_OWN_KEY = ENV;
   const bad = tmpHome("jev: {url: not a url, key_env: JILLS_TEST_OWN_KEY}\n");
   const base: MatchInput = { message: "x", recent: [], jills: [], already: [], config: loadConfig(bad) };
-  assert.equal(await jevMatcher.match(base), undefined);
+  assert.match(String((await jevMatcher.match(base))?.note), /^Jev unavailable: /);
   const asked: string[] = [];
   const other = tmpHome("jev: {key_env: OPENROUTER_API_KEY}\n");
-  assert.equal(await jevMatcher.match({ ...base, config: loadConfig(other), jevKey: () => (asked.push("x"), "k") }), undefined);
+  assert.match(String((await jevMatcher.match({ ...base, config: loadConfig(other), jevKey: () => (asked.push("x"), "k") }))?.note), /^Jev unavailable: /);
   assert.deepEqual(asked, [], "the key is never even looked up");
   assert.equal(calls.length, 0);
 });

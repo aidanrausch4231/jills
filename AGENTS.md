@@ -11,6 +11,8 @@ Read this first. It applies to every agent (human or AI) changing this repo.
   and Codex). When a message is a *new task* that fits a saved Jill, it suggests it.
   Nothing runs until the user presses Start, unless auto mode is on, in which case the
   add-on starts it and tells the main agent.
+  Jev (TypeSafe System One, `TYPESAFE_API_KEY`) is required for suggestions: no key or no
+  answer means no suggestion, with a short reason. There is no keyword fallback.
 - A **Jill** is a `JILL.md` file: name, `when` (when to use it), inputs, and steps.
   A step is an existing **agent file** (e.g. `agent: harness-reviewer`), a shell
   command (`run:`), or **another Jill** (`jill:`). Small Jills nest into bigger ones.
@@ -44,7 +46,7 @@ Jills follows the same rules:
 ## Layout
 
 - `src/` — core library and CLI (`jills ...`).
-- `src/plugins/` — built-in plug-ins (Jev and keyword matchers, command, Pi agent
+- `src/plugins/` — built-in plug-ins (the Jev matcher, command, Pi agent
   and Claude Code agent runners, worktree isolation, exit-code and verdict checks, default suggest/anti-nag) and the plug-in interface.
 - `addons/` — one folder per harness: `mcp/` (any MCP client, served by `jills mcp`), `pi/`,
   `dsh/` (v1); `claude-code/` (v2).

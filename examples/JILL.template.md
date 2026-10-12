@@ -2,7 +2,6 @@
 name: __NAME__
 description: One line on what this Jill does.
 when: When the user asks to ... (Jev reads this to match chat messages)
-keywords: [__NAME__]
 inputs:
   - name: task
     description: What to do

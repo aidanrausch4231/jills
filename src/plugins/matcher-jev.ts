@@ -1,6 +1,6 @@
 import type { JillsConfig } from "../config.js";
 import { buildSystemOneRequest, parseSystemOne } from "./jev-system-one.js";
-import type { MatchInput, MatcherPlugin } from "./types.js";
+import type { MatchInput, MatchResult, MatcherPlugin } from "./types.js";
 
 /** Config `jev:` with defaults (model, key_env, url, timeout_ms, threshold). */
 export function jevConfig(config: JillsConfig) {
@@ -22,12 +22,15 @@ export function setJevFetch(f: FetchLike | undefined): void {
   fetchImpl = f;
 }
 
+/** Jev is the only matcher: when it cannot answer, say why and suggest nothing. */
+const off = (why: string): MatchResult => ({ label: "talk", confidence: 0, matcher: "jev", note: `Jev unavailable: ${why}` });
+
 /**
  * Jev: one stateless TypeSafe System One call per message (Choice + two Noul
  * questions, real probabilities, no generated text). The key comes from
  * input.jevKey (a lookup of exactly jev.key_env), else the env var named by
  * jev.key_env; it is never logged or stored. No key, an HTTP or network error
- * or a bad reply returns undefined so the keywords matcher answers instead.
+ * or a bad reply suggests nothing and says why (note "Jev unavailable: ...").
  */
 const jevMatcher: MatcherPlugin = {
   slot: "matcher",
@@ -37,11 +40,11 @@ const jevMatcher: MatcherPlugin = {
     const jev = jevConfig(input.config);
     // Never load or send another provider's key to TypeSafe (custom urls are not guarded).
     let host = "";
-    try { host = new URL(jev.url).hostname.replace(/\.$/, ""); } catch { return undefined; }
-    if (host === "api.typesafe.ai" && jev.key_env !== "TYPESAFE_API_KEY") return undefined;
+    try { host = new URL(jev.url).hostname.replace(/\.$/, ""); } catch { return off("bad jev.url"); }
+    if (host === "api.typesafe.ai" && jev.key_env !== "TYPESAFE_API_KEY") return off("jev.key_env must be TYPESAFE_API_KEY for api.typesafe.ai");
     const own: unknown = await Promise.resolve().then(() => input.jevKey?.()).catch(() => undefined);
     const key = (typeof own === "string" && own.trim()) || process.env[jev.key_env];
-    if (!key) return undefined;
+    if (!key) return off(`${jev.key_env} not set`);
     const f: FetchLike = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     try {
       const res = await f(jev.url, {
@@ -50,10 +53,10 @@ const jevMatcher: MatcherPlugin = {
         body: JSON.stringify(buildSystemOneRequest(input, jev.model)),
         signal: AbortSignal.timeout(jev.timeout_ms),
       });
-      if (!res.ok) return undefined;
-      return parseSystemOne(await res.json(), input, jev.threshold);
-    } catch {
-      return undefined;
+      if (!res.ok) return off(`HTTP ${res.status}`);
+      return parseSystemOne(await res.json(), input, jev.threshold) ?? off("bad reply");
+    } catch (e) {
+      return off((e as Error)?.name === "TimeoutError" ? "timeout" : "network error");
     }
   },
 };

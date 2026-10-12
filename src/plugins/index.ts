@@ -6,7 +6,6 @@ import commandRunner from "./runner-command.js";
 import exitCodeCheck from "./check-exit-code.js";
 import verdictCheck from "./check-verdict.js";
 import jevMatcher from "./matcher-jev.js";
-import keywordsMatcher from "./matcher-keywords.js";
 import worktreeIsolation from "./isolation-worktree.js";
 import defaultSuggest from "./suggest-default.js";
 import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
@@ -26,7 +25,7 @@ export interface PluginSet {
 
 export function builtinPlugins(): PluginSet {
   return {
-    matchers: [jevMatcher, keywordsMatcher],
+    matchers: [jevMatcher],
     runners: [commandRunner, claudeRunner, agentRunner],
     isolation: new Map([[worktreeIsolation.name, worktreeIsolation]]),
     checks: new Map([exitCodeCheck, verdictCheck].map((c) => [c.name, c])),

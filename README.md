@@ -70,10 +70,12 @@ Jev is [TypeSafe](https://docs.typesafe.ai) System One (`jev-latest`): one reque
 `route` Choice (`talk`, `same`, `new:<jill>`, `none`) and two yes/no questions (`action`, `refers_back`), and real
 probabilities back. It never writes text. A Jill is suggested only when `route` is `new:<jill>`, its probability is
 at least `jev.threshold` and `action` is at least 0.5. Jev fills only a Jill's single required input that has no default,
-with your message. Custom `jev.url` values are not guarded: the key goes wherever you point it. A plain-string input (`inputs: [task]`) is never filled by Jev or keywords: mark it `required: true` (map form, `inputs: [{name: task, required: true}]`) to have it filled (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
+with your message. Custom `jev.url` values are not guarded: the key goes wherever you point it. A plain-string input (`inputs: [task]`) is never filled by Jev: mark it `required: true` (map form, `inputs: [{name: task, required: true}]`) to have it filled (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
 `key_env` (the dsh add-on asks dsh's credentials service for exactly that name; Pi and other harnesses do not pass their
 own logins). The key is never logged, written to Jills state or run records, or sent to agents. No key, an HTTP error
-or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
+or a network error → **no suggestion** and a short reason ("Jev unavailable: TYPESAFE_API_KEY not set", "... HTTP 429",
+"... timeout"). **Jev is required for suggestions: there is no keyword fallback.** The Claude Code mod and the Pi add-on show the
+reason once per session. `jills go <jill>`, `jills start` and the MCP `start_jill` tool still work without Jev. Core reads only
 `auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a
 plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `jev:` to the Jev matcher).
 
@@ -84,7 +86,6 @@ plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `j
 name: fix-bug
 description: Research a bug, fix it on a Jills branch, then get an independent review.
 when: The user reports a bug and wants it fixed.     # Jev matches on this
-keywords: [bug, broken]                              # fallback matcher
 inputs:
   - name: task
     required: true
@@ -295,12 +296,12 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - A Jill running in this chat → quiet until it ends.
 - An ignored suggestion → wait for a new task: the ignored Jill (and any Jill already suggested in
   this chat) stays quiet for the same task (a rewording or continuation, judged by Jev's `same` probability) and comes back for a new task
-  (`same` below 0.2) or a different Jill. A keyword hit never counts as a new task.
+  (`same` below 0.2) or a different Jill.
 - Never → muted for this repo (one Jill, or all) in `$JILLS_HOME/muted.json`.
 - `/jills quiet` → quiet mode for this chat.
 - At most one suggestion per 3 messages.
-- Jev may only fill inputs the Jill declares; core drops any other key (such as `repo`), for Jev,
-  keyword and plug-in matches, for any `suggest` plug-in's answer and for `jills go`.
+- Jev may only fill inputs the Jill declares; core drops any other key (such as `repo`), for Jev
+  and plug-in matches, for any `suggest` plug-in's answer and for `jills go`.
 - The last suggestion's inputs are saved in the session state; `jills go` (and `/jills go`) uses
   them, with `--input` overriding single values.
 
@@ -327,7 +328,7 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 { slot: "suggest", suggest(input: { session; message; recent; repo? }, ctx: { jills; config; match }): Promise<Suggestion>; chat(session, change: ChatChange, config): LastSuggestion | undefined }
 ```
 
-Built-ins: matcher `jev` then `keywords`; runner `command` and `agent`; isolation `worktree`;
+Built-ins: matcher `jev` (the only default matcher; no fallback); runner `command` and `agent`; isolation `worktree`;
 check `exit-code` and `verdict`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
 finished run's one-line result to a file:
 

@@ -10,9 +10,11 @@ import { bootId } from "../src/proc.js";
 import { heartbeatPath, listRecords, loadHeartbeat, loadRecord, refreshRecord, saveRecord, type Heartbeat, type RunRecord } from "../src/runs.js";
 import { MAX_TIMER_MS, sleep, writeJsonAtomic } from "../src/util.js";
 import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
+import { JEV_TEST_CONFIG, keywordJev, resetKeywordJev } from "./jev-fixtures.js";
 
 const kids: ChildProcess[] = [];
 after(() => {
+  resetKeywordJev();
   for (const k of kids) {
     try {
       if (k.pid) process.kill(k.pid, "SIGKILL");
@@ -227,16 +229,18 @@ test("jills check warns on worktree: false; jills new scaffolds worktree: true w
 });
 
 test("a worktree: false suggestion says 'no worktree: edits your checkout directly'", async () => {
-  const home = tmpHome();
-  writeJill(home, "direct", "description: Fix it in place\nkeywords: [inplace]\nworktree: false\nsteps:\n  a: {run: 'true'}");
+  const home = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ direct: ["inplace"] });
+  writeJill(home, "direct", "description: Fix it in place\nworktree: false\nsteps:\n  a: {run: 'true'}");
   const s = await suggest({ home, session: "nw", message: "please do the inplace thing", repo: tmp() });
   assert.equal(s.action, "suggest", s.reason);
   assert.equal(s.worktree, false);
   assert.equal(s.warning, NO_WORKTREE_NOTE);
   assert.match(s.text!, /no worktree: edits your checkout directly/);
   assert.match(s.agentContext!, /no worktree: edits your checkout directly/);
-  const home2 = tmpHome();
-  writeJill(home2, "iso", "description: In a worktree\nkeywords: [inplace]\nsteps:\n  a: {run: 'true'}");
+  const home2 = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ iso: ["inplace"] });
+  writeJill(home2, "iso", "description: In a worktree\nsteps:\n  a: {run: 'true'}");
   const s2 = await suggest({ home: home2, session: "nw", message: "please do the inplace thing", repo: tmp() });
   assert.equal(s2.worktree, true);
   assert.equal(s2.warning, undefined);

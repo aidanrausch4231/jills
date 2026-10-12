@@ -74,7 +74,7 @@ Configuration (all optional):
 - `JILLS_LIB` — path to the Jills library `dist/src/index.js` (default: this repo's build); or plugin config `lib`.
 - Jev is TypeSafe System One (`TYPESAFE_API_KEY`). The Host asks dsh's own credentials service
   (`ctx.credentials`) for exactly the name in `jev.key_env` (default `TYPESAFE_API_KEY`), then the Host's env var of that name.
-  Without a key the keywords matcher answers. Jills never reads credential files and never logs the key.
+  Without a key there is no suggestion (the quiet card's reason says "Jev unavailable: ..."). Jills never reads credential files and never logs the key.
 - Plugin config `maxAgeMs` — how old a message may be and still be sent to Jev (default 300000).
 
 Set plugin config with a profile patch, for example `- id: jills` / `config: { home: /path }`.

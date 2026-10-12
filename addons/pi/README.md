@@ -47,8 +47,8 @@ It holds no Jills logic; it calls the Jills library (`dist/src/index.js`).
    If you do copy the file elsewhere, set `JILLS_LIB=/home/rausch/harness/v4/personal/jills/dist/src/index.js`.
 
 3. Jev is TypeSafe System One. Export `TYPESAFE_API_KEY` (or the env var named by `jev.key_env`) in the shell that
-   starts Pi. The add-on never passes Pi's own provider logins (such as OpenRouter) on to TypeSafe. Without a key
-   Jills uses the `keywords:` fallback. The key is never logged or stored, and Jills never reads Pi's credential files.
+   starts Pi. The add-on never passes Pi's own provider logins (such as OpenRouter) on to TypeSafe. Without a key there is no suggestion: Pi shows
+   "Jev unavailable: ..." once per session. The key is never logged or stored, and Jills never reads Pi's credential files.
 
 Jills state lives in `~/.jills` (or `$JILLS_HOME`). Run `jills check` to validate your Jills.
 

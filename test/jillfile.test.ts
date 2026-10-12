@@ -34,7 +34,7 @@ test("JILL.md parses fields, defaults and pass-through extras", () => {
   const j = parseJill(ok, "/x/demo/JILL.md");
   assert.equal(j.name, "demo");
   assert.equal(j.when, "When testing");
-  assert.deepEqual(j.keywords, ["demo", "try"]);
+  assert.deepEqual(j.extra.keywords, ["demo", "try"]); // an old field just passes through
   assert.deepEqual(j.inputs.map((i) => i.name), ["who", "task"]);
   assert.equal(j.inputs[1]!.required, true);
   assert.equal(j.worktree, true);

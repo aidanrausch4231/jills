@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { check, dryRun, runNow, suggest } from "../src/api.js";
 import { checkNesting, parseJill } from "../src/jillfile.js";
 import { git, tmpHome, tmpRepo, writeJill } from "./helpers.js";
+import { JEV_TEST_CONFIG, keywordJev, resetKeywordJev } from "./jev-fixtures.js";
+
+after(resetKeywordJev);
 
 const ID = "-c user.name=t -c user.email=t@t";
 /** The documented procedure: squash the run branch into the base in the user's checkout. */
@@ -258,9 +261,10 @@ test("R2: merges: true must be the single final step of the outermost Jill", asy
 });
 
 test("check, dry run and Jev say it merges (nested Jills too)", async () => {
-  const home = tmpHome();
+  const home = tmpHome(JEV_TEST_CONFIG);
+  keywordJev({ sq: ["ship it"], wrap: ["wrap it"] });
   const repo = tmpRepo();
-  writeJill(home, "sq", `description: ship it\nkeywords: [ship it]\n${jill("true")}`);
+  writeJill(home, "sq", `description: ship it\n${jill("true")}`);
   assert.ok((await check({ home })).warnings.some((w) => /step merge merges into the branch the run started from/.test(w)));
   assert.ok((await dryRun("sq", { home, cwd: repo })).some((l) => /merge .*merges into your branch/.test(l)));
   const s = await suggest({ home, session: "m1", message: "please ship it", repo });
@@ -268,9 +272,9 @@ test("check, dry run and Jev say it merges (nested Jills too)", async () => {
   assert.equal(s.warning, "merges into main when done");
   assert.match(s.text!, /merges into main when done/);
 
-  const h2 = tmpHome();
+  const h2 = tmpHome(JEV_TEST_CONFIG);
   writeJill(h2, "inner", "steps:\n  m: {run: y, merges: true}");
-  writeJill(h2, "wrap", "description: wrap\nkeywords: [wrap it]\nsteps:\n  s: {jill: inner}");
+  writeJill(h2, "wrap", "description: wrap\nsteps:\n  s: {jill: inner}");
   const w = await suggest({ home: h2, session: "m2", message: "wrap it", repo });
   assert.equal(w.jill, "wrap");
   assert.equal(w.warning, "merges into main when done");

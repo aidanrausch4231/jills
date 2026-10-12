@@ -184,11 +184,17 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
     return rec;
   }
 
+  let offShown = false;
+
   /** Ask Jev about one message; show the result; return text for the agent's context. */
   async function check(ctx: ExtensionContext, message: string): Promise<string | undefined> {
     const core = await getCore();
     // Jev is TypeSafe System One: core reads the env var named by jev.key_env. Pi's own provider logins are never passed on.
     const s: Suggestion = await core.suggest({ session: sessionKey(ctx), message, recent: recentTurns(ctx), cwd: ctx.cwd, home });
+    if (!offShown && s.action === "quiet" && s.reason?.startsWith("Jev unavailable")) {
+      offShown = true; // once per session
+      notify(`Jills: ${s.reason}`, "warning");
+    }
     if (s.action !== "suggest" || !s.jill) return undefined;
     if (s.auto) {
       try {

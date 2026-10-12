@@ -6,6 +6,8 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -87,7 +89,7 @@ function fakeCore(over: Partial<Record<keyof JillsCore, any>> = {}) {
       polls += 1;
       return { ...run, state: polls >= 2 ? "done" : "running" };
     }),
-    listJills: rec("listJills", async () => [{ name: "hello", description: "say hi", inputs: [], keywords: [], path: "/x" }]),
+    listJills: rec("listJills", async () => [{ name: "hello", description: "say hi", inputs: [], path: "/x" }]),
     chat: rec("chat", async (_s: string, ch: any) => (ch.kind === "last" ? { jill: "hello", inputs: {} } : undefined)),
     never: rec("never", async () => "muted hello for /repo"),
     setAuto: rec("setAuto", () => {}),
@@ -150,6 +152,16 @@ describe("pi add-on: suggestions", () => {
     assert.match(t.calls.widget.at(-1)![1], /\/jills go/);
     assert.match(t.calls.notify.at(-1)![0], /Jill "hello"/);
     assert.equal(t.called("start").length, 0, "manual mode never starts on its own");
+  });
+
+  it("Jev unavailable: the reason shows once per session, then stays quiet", async () => {
+    const t = setup({ suggest: async () => ({ action: "quiet", reason: "Jev unavailable: TYPESAFE_API_KEY not set", auto: false }) });
+    await t.emit("input", { type: "input", text: "please say hello to pi", source: "interactive" }, t.ctx);
+    await t.emit("before_agent_start", { type: "before_agent_start", prompt: "x" }, t.ctx);
+    await t.emit("input", { type: "input", text: "and again", source: "interactive" }, t.ctx);
+    await t.emit("before_agent_start", { type: "before_agent_start", prompt: "y" }, t.ctx);
+    const off = t.calls.notify.filter((n: any[]) => /Jev unavailable: TYPESAFE_API_KEY not set/.test(n[0]));
+    assert.equal(off.length, 1);
   });
 
   it("Pi passes no key lookup: another provider's login (OpenRouter) never reaches TypeSafe", async () => {
@@ -372,11 +384,23 @@ describe("pi add-on: real core (temp JILLS_HOME, temp repo)", { skip: !existsSyn
     return d;
   };
 
-  it("keyword match suggests hello, /jills go runs it, and the result is posted", async () => {
+  it("Jev suggests hello, /jills go runs it, and the result is posted", async () => {
+    const route = { type: "choice", choice: "new:hello", probabilities: { "new:hello": 0.95, talk: 0.05 }, confidence: 0.9 };
+    const jev = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ model: "jev-1.13.0", answers: { route, action: { type: "noul", noul: 0.95 }, refers_back: { type: "noul", noul: 0.05 } } }));
+      });
+    });
+    jev.listen(0, "127.0.0.1");
+    await once(jev, "listening");
+    process.env.JILLS_PI_TEST_KEY = "sk-test-not-real";
+    after(() => { jev.close(); delete process.env.JILLS_PI_TEST_KEY; });
     const home = tmp("jills-pi-home-");
     mkdirSync(join(home, "jills"), { recursive: true });
     mkdirSync(join(home, "agents"), { recursive: true });
-    writeFileSync(join(home, "config.yml"), `agent_paths: [${join(home, "agents")}]\n`);
+    writeFileSync(join(home, "config.yml"), `agent_paths: [${join(home, "agents")}]\njev: {url: "http://127.0.0.1:${(jev.address() as { port: number }).port}/v1/systemone", key_env: JILLS_PI_TEST_KEY}\n`);
     cpSync(join(repoRoot, "examples", "hello"), join(home, "jills", "hello"), { recursive: true });
     const repo = tmp("jills-pi-repo-");
     const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };

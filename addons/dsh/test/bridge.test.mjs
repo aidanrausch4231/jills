@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { after, before, test } from 'node:test'
+import { after, afterEach, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { credentialsKey, JillsBridge, jillsSession, loadCore, NO_WORKSPACE, runLine, startedNotice, turnsBefore } from '../lib/types/bridge.js'
 
@@ -22,14 +22,16 @@ const jevRequests = []
 const systemOne = (route, p) => ({ model: 'jev-1.13.0', answers: {
   route: { type: 'choice', choice: route, probabilities: { [route]: p, other: 1 - p }, confidence: p },
   action: { type: 'noul', noul: 0.95 }, refers_back: { type: 'noul', noul: 0.05 } } })
-let jevReply = systemOne('new:hello', 0.91)
+let jevReply // set by a test; otherwise a message that says "hello" routes to the hello Jill, anything else is talk
+afterEach(() => { jevReply = undefined; jevRequests.length = 0; process.env.JILLS_TEST_JEV_KEY = 'test-key' })
+process.env.JILLS_TEST_JEV_KEY = 'test-key'
 const jev = createServer((req, res) => {
   let body = ''
   req.on('data', c => { body += c })
   req.on('end', () => {
     jevRequests.push({ auth: req.headers.authorization, body: JSON.parse(body) })
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(jevReply))
+    res.end(JSON.stringify(jevReply ?? systemOne(JSON.parse(body).state.latest_message.toLowerCase().includes('hello') ? 'new:hello' : 'talk', 0.91)))
   })
 })
 let jevUrl = ''
@@ -38,7 +40,7 @@ after(() => { jev.close() })
 
 let n = 0
 /** A fresh Jills home + git repo; `jev` points the matcher at the mock server. */
-function fixture({ auto = false, jev: useJev = false, agent = undefined, jevKey = undefined } = {}) {
+function fixture({ auto = false, jev: useJev = true, agent = undefined, jevKey = undefined } = {}) {
   const dir = join(root, `case-${++n}`)
   const home = join(dir, 'home'), repo = join(dir, 'repo')
   mkdirSync(home, { recursive: true }); mkdirSync(repo, { recursive: true })
@@ -60,12 +62,12 @@ async function untilTerminal(bridge, runId) {
   throw new Error('run did not finish')
 }
 
-test('keyword fallback suggests hello with its declared inputs; cached per message', async () => {
+test('Jev suggests hello with its declared fields; cached per message', async () => {
   const { home, repo, bridge } = fixture()
   const card = await bridge.suggest(msg({ cwd: repo }))
   assert.equal(card.kind, 'suggest')
   assert.equal(card.jill, 'hello')
-  assert.equal(card.matcher, 'keywords')
+  assert.equal(card.matcher, 'jev')
   assert.deepEqual(card.fields, ['who'])
   assert.equal(card.run, null)
   const again = await bridge.suggest(msg({ cwd: repo }))
@@ -90,7 +92,7 @@ test('Jev request shape and inputs come through the card', async () => {
     assert.equal(jevRequests[0].auth, 'Bearer test-key')
     assert.equal(jevRequests[0].body.state.latest_message, 'greet Aidan for me')
     assert.equal(jevRequests[0].body.questions.route.type, 'choice')
-  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+  } finally { process.env.JILLS_TEST_JEV_KEY = 'test-key' }
 })
 
 test('Jev uses the key from dsh credentials (resolve by jev.key_env name); env var is the fallback; never stored', async () => {
@@ -116,7 +118,7 @@ test('Jev uses the key from dsh credentials (resolve by jev.key_env name); env v
     await bridge.suggest(msg({ sessionId: 'sess-k2', messageId: 'm2', text: 'greet Aidan again', cwd: repo }))
     assert.equal(jevRequests.at(-1).auth, 'Bearer env-key')
     assert.equal(await credentialsKey(() => undefined)('TYPESAFE_API_KEY'), undefined, 'no credentials service: core uses the env var')
-  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+  } finally { process.env.JILLS_TEST_JEV_KEY = 'test-key' }
 })
 
 test('talk and history messages stay quiet; history never reaches Jev', async () => {
@@ -131,7 +133,7 @@ test('talk and history messages stay quiet; history never reaches Jev', async ()
     assert.match(old.reason, /old message/)
     assert.equal((await bridge.suggest(msg({ messageId: 'blank', text: '   ' }))).kind, 'quiet')
     assert.equal(jevRequests.length, 1)
-  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+  } finally { process.env.JILLS_TEST_JEV_KEY = 'test-key' }
 })
 
 test('Not this closes the card and quiets the chat', async () => {
@@ -309,7 +311,7 @@ test('Jev gets the last 3 turns before the message, not just the new message', a
     const state = jevRequests[0].body.state
     assert.deepEqual(state.recent_turns, [{ role: 'assistant', text: 'a1' }, { role: 'user', text: 'u2' }, { role: 'assistant', text: 'a2' }])
     assert.equal(state.latest_message, 'greet Aidan for me')
-  } finally { delete process.env.JILLS_TEST_JEV_KEY }
+  } finally { process.env.JILLS_TEST_JEV_KEY = 'test-key' }
 })
 
 test('turnsBefore reads typed user and assistant turns before the message from dsh events', () => {
