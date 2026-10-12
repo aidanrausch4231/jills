@@ -19,14 +19,14 @@ export interface MatchInput {
   /** Up to the last 3 turns before the message. */
   recent: Turn[];
   jills: JillSummary[];
-  /** Jills already suggested or running in this chat. */
-  already: string[];
+  already: string[]; // Jills already suggested or running in this chat
+  suggestedTask?: { jill: string; task: string }; // last Jill suggested here (maybe ignored) and the message behind it
   config: JillsConfig;
   /** Built-in Jev matcher only: the harness's own key for jev.key_env (name locked by core). Never log or store it. */
   jevKey?: () => Promise<string | undefined> | string | undefined;
 }
 export type MatchLabel = "talk" | "same" | "new";
-export type MatchResult = { label: MatchLabel; jill?: string; inputs?: Record<string, string>; confidence: number; matcher: string; note?: string };
+export type MatchResult = { label: MatchLabel; jill?: string; inputs?: Record<string, string>; confidence: number; matcher: string; note?: string; /** P(this message continues a task already suggested or running); Jev only */ sameProb?: number };
 export interface MatcherPlugin {
   slot: "matcher";
   apiVersion: 1;

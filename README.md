@@ -70,7 +70,7 @@ Jev is [TypeSafe](https://docs.typesafe.ai) System One (`jev-latest`): one reque
 `route` Choice (`talk`, `same`, `new:<jill>`, `none`) and two yes/no questions (`action`, `refers_back`), and real
 probabilities back. It never writes text. A Jill is suggested only when `route` is `new:<jill>`, its probability is
 at least `jev.threshold` and `action` is at least 0.5. Jev fills only a Jill's single required input that has no default,
-with your message (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
+with your message. A plain-string input (`inputs: [task]`) is never filled by Jev or keywords: mark it `required: true` (map form, `inputs: [{name: task, required: true}]`) to have it filled (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
 `key_env` (the dsh add-on asks dsh's credentials service for exactly that name; Pi and other harnesses do not pass their
 own logins). The key is never logged, written to Jills state or run records, or sent to agents. No key, an HTTP error
 or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
@@ -294,8 +294,8 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 - Dismissed ("Not this") → quiet for the rest of this chat.
 - A Jill running in this chat → quiet until it ends.
 - An ignored suggestion → wait for a new task: the ignored Jill (and any Jill already suggested in
-  this chat) stays quiet until a different Jill matches, or Jev names it for a different target
-  (other inputs). A keyword hit never counts as a new task.
+  this chat) stays quiet for the same task (a rewording or continuation, judged by Jev's `same` probability) and comes back for a new task
+  (`same` below 0.2) or a different Jill. A keyword hit never counts as a new task.
 - Never → muted for this repo (one Jill, or all) in `$JILLS_HOME/muted.json`.
 - `/jills quiet` → quiet mode for this chat.
 - At most one suggestion per 3 messages.

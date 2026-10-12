@@ -20,7 +20,7 @@ const cli = join(root, "dist", "src", "cli.js");
 const jevReply = (reply: unknown): FetchLike => fakeFetch(reply);
 
 function helloHome(config = ""): string {
-  const home = tmpHome(`jev: {key_env: JILLS_FIX2_KEY}\n${config}`);
+  const home = tmpHome(`jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_FIX2_KEY}\n${config}`);
   cpSync(join(root, "examples", "hello"), join(home, "jills", "hello"), { recursive: true });
   return home;
 }

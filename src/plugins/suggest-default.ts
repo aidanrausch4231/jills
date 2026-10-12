@@ -22,7 +22,7 @@ export interface SessionState {
   dismissed: boolean;
   /** A suggestion was ignored: wait until Jev sees a new task. */
   waitingForNew: boolean;
-  lastSuggestion?: { jill: string; at: number; resolved: boolean; inputs?: Record<string, string> };
+  lastSuggestion?: { jill: string; at: number; resolved: boolean; inputs?: Record<string, string>; task?: string };
   suggested: string[];
   runs: string[];
   updated?: string;
@@ -55,11 +55,12 @@ function setMutes(home: string, repo: string, names: string[] | undefined): void
 }
 const isMuted = (list: string[], jill: string) => list.includes("*") || list.includes(jill);
 
-/** Jev (not keywords) named a Jill with inputs that differ from the ignored suggestion's. */
+/** Jev (not keywords) named another Jill, or the same Jill for a new task (p(same) < 0.2) rather than a rewording. */
 function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): boolean {
-  const given = Object.entries(m.inputs ?? {}).filter(([, v]) => String(v).trim() !== "");
-  if (m.matcher === "keywords" || !given.length) return false;
-  return !last || last.jill !== m.jill || given.some(([k, v]) => (last.inputs ?? {})[k] !== v);
+  if (m.matcher === "keywords") return false;
+  if (!last || last.jill !== m.jill) return true;
+  if (m.sameProb !== undefined) return m.sameProb < 0.2; // Jev's own judgment: a new task, not a rewording
+  return Object.entries(m.inputs ?? {}).some(([k, v]) => String(v).trim() !== "" && (last.inputs ?? {})[k] !== v);
 }
 
 /** The main agent's instructions for a suggestion (manual: ask the user; auto: start it). */
@@ -105,14 +106,13 @@ const defaultSuggest: SuggestPlugin = {
     const muted = o.repo ? (mutes(home)[o.repo] ?? []) : [];
     const jills = c.jills.filter((j) => !isMuted(muted, j.name));
     if (!jills.length) return quiet("no Jills to suggest");
-    const m = await c.match({ message: o.message, recent: o.recent, jills, already: [...new Set(s.suggested)], config: c.config });
+    const m = await c.match({ message: o.message, recent: o.recent, jills, already: [...new Set(s.suggested)], config: c.config, ...(last?.task ? { suggestedTask: { jill: last.jill, task: last.task } } : {}) });
     if (!m) return quiet("no matcher answered");
     const base = { label: m.label, matcher: m.matcher, confidence: m.confidence };
     if (m.label !== "new" || !m.jill) return quiet(m.label === "same" ? "same task as before" : "just talk", base);
     if (s.waitingForNew) {
       // Ignored → wait for a new task: the ignored Jill (or one already suggested
-      // here) stays quiet until a different Jill matches, or Jev names the same
-      // Jill for a different target (other inputs). Keyword hits are never "new".
+      // here) stays quiet for the same task; a new task (Jev's p(same) < 0.2) or another Jill comes back. Keyword hits are never "new".
       const ignored = new Set([...(last ? [last.jill] : []), ...s.suggested]);
       if (ignored.has(m.jill) && !isNewTarget(m, last)) return quiet("ignored; waiting for a new task", { ...base, jill: m.jill });
       s.waitingForNew = false;
@@ -121,7 +121,7 @@ const defaultSuggest: SuggestPlugin = {
     const j = c.jills.find((x) => x.name === m.jill);
     if (!j) return quiet(`matcher named unknown Jill ${m.jill}`, base);
     const inputs = m.inputs ?? {};
-    s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false, inputs };
+    s.lastSuggestion = { jill: j.name, at: s.messages, resolved: false, inputs, task: o.message.trim().slice(0, 500) };
     s.suggested.push(j.name);
     saveSession(home, s);
     const inputText = Object.keys(inputs).length ? ` with ${Object.entries(inputs).map(([k, v]) => `${k}=${shown(v)}`).join(", ")}` : "";

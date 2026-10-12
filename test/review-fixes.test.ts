@@ -5,7 +5,7 @@ import { after, afterEach, test } from "node:test";
 import { runNow, start, status, stop, suggest } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
 import { setJevFetch } from "../src/plugins/matcher-jev.js";
-import { fakeFetch, systemOne } from "./jev-fixtures.js";
+import { fakeFetch, systemOne, type JevCall } from "./jev-fixtures.js";
 import { loadRecord } from "../src/runs.js";
 import { renderShellTemplate } from "../src/template.js";
 import { sleep } from "../src/util.js";
@@ -102,23 +102,30 @@ afterEach(() => {
   delete process.env.JILLS_TEST_JEV_KEY;
 });
 
-test("ignored suggestion: Jev naming the same Jill with another target counts as new", async () => {
-  const home = tmpHome("jev: {key_env: JILLS_TEST_JEV_KEY, threshold: 0.7}\n");
+test("ignored suggestion: a rewording stays quiet, a new task of the same kind comes back (Jev p(same))", async () => {
+  const home = tmpHome("jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_JEV_KEY, threshold: 0.7}\n");
   writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\ninputs: [{name: task, required: true}]\nworktree: false\nsteps:\n  a: {run: echo}");
   process.env.JILLS_TEST_JEV_KEY = "sk-test-not-real";
   let reply: unknown = systemOne("new:fix-bug", 0.9);
-  setJevFetch(fakeFetch(() => reply));
+  const calls: JevCall[] = [];
+  setJevFetch(fakeFetch(() => reply, calls));
   const repo = tmpRepo();
   const say = (m: string) => suggest({ home, session: "ign-jev", message: m, repo });
   assert.equal((await say("login gives 500")).action, "suggest");
   reply = systemOne("talk", 0.9);
   await say("ok");
   await say("ok");
-  reply = systemOne("new:fix-bug", 0.9);
-  assert.equal((await say("login gives 500")).reason, "ignored; waiting for a new task");
+  reply = systemOne("new:fix-bug", 0.72, 0.95, 0.05, { same: 0.25 });
+  assert.equal((await say("login still 500")).reason, "ignored; waiting for a new task");
+  reply = systemOne("same", 0.6);
+  assert.equal((await say("login gives 500 again")).reason, "same task as before");
+  reply = systemOne("new:fix-bug", 0.9, 0.95, 0.05, { same: 0.05 });
   const fresh = await say("signup crashes too");
   assert.equal(fresh.action, "suggest");
   assert.deepEqual(fresh.inputs, { task: "signup crashes too" });
+  const body = JSON.parse(calls.at(-1)!.init.body);
+  assert.deepEqual(body.state.last_suggested_task, { jill: "fix-bug", message: "login gives 500" });
+  assert.match(body.questions.route.criteria.same, /rewords a task already suggested \(even if the user ignored it\)/);
 });
 
 // ---------------------------------------------------------------- P2: merge-back with a dirty parent

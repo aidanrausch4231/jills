@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, afterEach } from "node:test";
 import { suggest } from "../src/api.js";
-import jevMatcher, { setJevFetch } from "../src/plugins/matcher-jev.js";
+import jevMatcher, { jevConfig, setJevFetch } from "../src/plugins/matcher-jev.js";
 import { buildSystemOneRequest, parseSystemOne } from "../src/plugins/jev-system-one.js";
 import { loadConfig } from "../src/config.js";
 import type { MatchInput } from "../src/plugins/types.js";
@@ -11,7 +11,7 @@ import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
 const KEY = "sk-test-not-real-123";
 
 function homeWithJills(config = "threshold: 0.6") {
-  const home = tmpHome(`jev: {key_env: JILLS_TEST_JEV_KEY, ${config}}\n`);
+  const home = tmpHome(`jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_JEV_KEY, ${config}}\n`);
   writeJill(home, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\nkeywords: [bug, broken]\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
   writeJill(home, "research", "description: Research a question\nwhen: user asks how something works\nkeywords: [research]\nsteps:\n  a: {run: echo}");
   return home;
@@ -46,7 +46,8 @@ test("request: one System One call, url/model/questions, key only in the header"
   ];
   const s = await suggest({ home, session: "jev-1", message: "the login page is broken", recent, repo: tmpRepo() });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.url, "https://api.typesafe.ai/v1/systemone");
+  assert.equal(calls[0]!.url, "https://jev.example.test/v1/systemone");
+  assert.equal(jevConfig(loadConfig(tmpHome())).url, "https://api.typesafe.ai/v1/systemone");
   assert.equal(calls[0]!.init.method, "POST");
   assert.equal(calls[0]!.init.headers.authorization, `Bearer ${KEY}`);
   assert.ok(!calls[0]!.init.body.includes(KEY), "key never in body");

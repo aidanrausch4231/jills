@@ -15,7 +15,7 @@ const ENV = "sk-env-not-real-789";
 type Call = { url: string; init: Parameters<FetchLike>[1] };
 
 function home() {
-  const h = tmpHome("jev: {key_env: JILLS_TEST_OWN_KEY, threshold: 0.7}\n");
+  const h = tmpHome("jev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_OWN_KEY, threshold: 0.7}\n");
   writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
   return h;
 }
@@ -69,7 +69,7 @@ test("no supplied key and no env var: Jev makes no call", async () => {
 test("only the built-in Jev matcher gets a key lookup, locked to jev.key_env; a third-party matcher gets none", async () => {
   const file = join(tmp(), "spy-matcher.js");
   writeFileSync(file, `export default { slot: "matcher", apiVersion: 1, name: "spy", async match(input) { globalThis.__jillsSpy = { has: "jevKey" in input, type: typeof input.jevKey }; return undefined; } };`);
-  const h = tmpHome(`plugins: [${file}]\njev: {key_env: JILLS_TEST_OWN_KEY}\n`);
+  const h = tmpHome(`plugins: [${file}]\njev: {url: https://jev.example.test/v1/systemone, key_env: JILLS_TEST_OWN_KEY}\n`);
   writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
   const calls: Call[] = [];
   const asked: string[] = [];
@@ -90,4 +90,23 @@ test("Jev matcher tolerates a lookup that throws synchronously or returns a plai
   await jevMatcher.match({ ...base, jevKey: () => { throw new Error("sync boom"); } });
   await jevMatcher.match({ ...base, jevKey: () => "  sk-plain-not-real  " });
   assert.deepEqual(calls.map((c) => c.init.headers.authorization), [`Bearer ${ENV}`, "Bearer sk-plain-not-real"]);
+});
+
+test("a non-TypeSafe key_env with the TypeSafe url sends nothing (fetch never called)", async () => {
+  const h = tmpHome("jev: {key_env: OPENROUTER_API_KEY, threshold: 0.7}\n");
+  process.env.OPENROUTER_API_KEY = "sk-or-fake-not-real";
+  try {
+    const calls: Call[] = [];
+    setJevFetch(fetchInto(calls));
+    const base: MatchInput = { message: "the login page is broken", recent: [], jills: [], already: [], config: loadConfig(h) };
+    assert.equal(await jevMatcher.match(base), undefined);
+    assert.equal(await jevMatcher.match({ ...base, jevKey: () => "sk-or-from-lookup" }), undefined);
+    const other = tmpHome("jev: {key_env: MY_OTHER_KEY}\n");
+    process.env.MY_OTHER_KEY = "x";
+    assert.equal(await jevMatcher.match({ ...base, config: loadConfig(other) }), undefined);
+    delete process.env.MY_OTHER_KEY;
+    assert.equal(calls.length, 0);
+  } finally {
+    delete process.env.OPENROUTER_API_KEY;
+  }
 });
