@@ -1,0 +1,5 @@
+{
+  "name": "jills",
+  "owner": { "name": "Aidan Rausch" },
+  "plugins": [{ "name": "jills", "source": "./addons/claude-code/mod/jills" }]
+}

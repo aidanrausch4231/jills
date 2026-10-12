@@ -9,6 +9,11 @@ Light like Pi: a tiny core and single-file plug-ins behind small versioned inter
 
 **v1 = Pi + DeepSeek Harness (dsh).** The Claude Code add-on (`addons/claude-code/`) is v2: its code
 and tests stay in the repo and run in `pnpm test`, but it is not part of the v1 install.
+Its mod (suggestion card, progress pane, status row) installs in Claude Code with:
+
+```
+/plugin install jills --marketplace aidanrausch4231/jills
+```
 
 ## Install
 
