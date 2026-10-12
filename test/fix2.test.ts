@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { go, chat, runNow, start, stop, suggest, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
-import { parseJevReply, setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
+import { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
+import { fakeFetch, systemOne } from "./jev-fixtures.js";
 import { heartbeatPath, loadRecord, recordPath, saveRecord, type RunRecord } from "../src/runs.js";
 import { loadSession } from "../src/plugins/suggest-default.js";
 import { bootId } from "../src/proc.js";
@@ -16,9 +17,7 @@ import { pidAlive, tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 const root = new URL("../../", import.meta.url).pathname;
 const cli = join(root, "dist", "src", "cli.js");
 
-function jevReply(reply: unknown): FetchLike {
-  return async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) });
-}
+const jevReply = (reply: unknown): FetchLike => fakeFetch(reply);
 
 function helloHome(config = ""): string {
   const home = tmpHome(`jev: {key_env: JILLS_FIX2_KEY}\n${config}`);
@@ -33,29 +32,24 @@ afterEach(() => {
 
 // ---------------------------------------------------------------- 1. only declared inputs
 
-test("parseJevReply keeps only inputs the named Jill declares", () => {
-  const r = parseJevReply('{"label":"new","jill":"hello","confidence":0.9,"inputs":{"who":"Aidan","repo":"/etc","task":"x","nested":{"a":1}}}', [
-    { name: "hello", inputs: ["who"] },
-    { name: "other", inputs: ["repo", "task"] },
-  ])!;
-  assert.deepEqual(r.inputs, { who: "Aidan" });
-});
-
-test("a chat-shaped Jev reply cannot set repo or other undeclared inputs (suggest, session, go)", async () => {
+test("Jev fills only the one required input of the Jill, never undeclared ones (suggest, session, go)", async () => {
   const home = helloHome();
   const repo = tmpRepo();
   const elsewhere = tmpRepo();
   process.env.JILLS_FIX2_KEY = "k";
-  setJevFetch(jevReply({ label: "new", jill: "hello", inputs: { who: "Aidan", repo: elsewhere, task: "rm -rf" }, confidence: 0.95 }));
+  // hello's only input `who` has a default, so Jev fills nothing; extra keys in a reply are ignored.
+  const reply = systemOne("new:hello", 0.95) as { answers: Record<string, unknown> };
+  reply.answers.inputs = { who: "Aidan", repo: elsewhere, task: "rm -rf" };
+  setJevFetch(jevReply(reply));
   const s = await suggest({ home, session: "f2-1", message: "say hello to Aidan", repo });
   assert.equal(s.action, "suggest");
-  assert.deepEqual(s.inputs, { who: "Aidan" });
+  assert.deepEqual(s.inputs, {});
   assert.doesNotMatch(s.agentContext!, /repo=|task=/);
-  assert.deepEqual(loadSession(home, "f2-1").lastSuggestion?.inputs, { who: "Aidan" });
+  assert.deepEqual(loadSession(home, "f2-1").lastSuggestion?.inputs, {});
   // jills go drops undeclared keys given by hand too, so repo never moves the run.
   const g = await go({ home, session: "f2-1", cwd: repo, inputs: { repo: elsewhere } });
   assert.deepEqual(g.dropped, ["repo"]);
-  assert.deepEqual(g.record.inputs, { who: "Aidan" });
+  assert.deepEqual(g.record.inputs, { who: "world" });
   assert.equal(g.record.repo, repo);
   assert.equal((await wait(g.record.id, { home, timeoutMs: 30_000 })).record.state, "done");
 });
@@ -86,9 +80,10 @@ test("jills go with no --input uses the last suggestion's saved inputs (CLI, new
   const home = helloHome();
   const repo = tmpRepo();
   process.env.JILLS_FIX2_KEY = "k";
-  setJevFetch(jevReply({ label: "new", jill: "hello", inputs: { who: "Saved Person" }, confidence: 0.95 }));
+  writeJill(home, "ask", "description: Ask someone\nwhen: the user wants someone greeted\ninputs: [{name: who, required: true}]\nworktree: false\nsteps:\n  a: {run: 'true'}");
+  setJevFetch(jevReply(systemOne("new:ask", 0.95)));
   assert.equal((await suggest({ home, session: "f2-go", message: "say hello", repo })).action, "suggest");
-  assert.deepEqual(await chat("f2-go", { kind: "last" }, { home }), { jill: "hello", inputs: { who: "Saved Person" } });
+  assert.deepEqual(await chat("f2-go", { kind: "last" }, { home }), { jill: "ask", inputs: { who: "say hello" } });
   const env: NodeJS.ProcessEnv = { ...process.env, JILLS_HOME: home };
   delete env.JILLS_FIX2_KEY;
   const r = spawnSync(process.execPath, [cli, "go", "--session", "f2-go", "--repo", repo], { env, encoding: "utf8", timeout: 60_000 });
@@ -96,7 +91,7 @@ test("jills go with no --input uses the last suggestion's saved inputs (CLI, new
   const id = /run (\S+)/.exec(r.stdout)![1]!;
   const w = await wait(id, { home, timeoutMs: 30_000 });
   assert.equal(w.record.state, "done", w.record.error);
-  assert.deepEqual(w.record.inputs, { who: "Saved Person" });
+  assert.deepEqual(w.record.inputs, { who: "say hello" });
   // --input still overrides one saved value.
   const g = await go({ home, session: "f2-go", cwd: repo, inputs: { who: "Override" } });
   assert.deepEqual(g.record.inputs, { who: "Override" });

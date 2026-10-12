@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { after, afterEach, test } from "node:test";
 import { runNow, start, status, stop, suggest } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
-import { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
+import { setJevFetch } from "../src/plugins/matcher-jev.js";
+import { fakeFetch, systemOne } from "./jev-fixtures.js";
 import { loadRecord } from "../src/runs.js";
 import { renderShellTemplate } from "../src/template.js";
 import { sleep } from "../src/util.js";
@@ -103,23 +104,21 @@ afterEach(() => {
 
 test("ignored suggestion: Jev naming the same Jill with another target counts as new", async () => {
   const home = tmpHome("jev: {key_env: JILLS_TEST_JEV_KEY, threshold: 0.7}\n");
-  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\ninputs: [task]\nworktree: false\nsteps:\n  a: {run: echo}");
+  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [bug]\ninputs: [{name: task, required: true}]\nworktree: false\nsteps:\n  a: {run: echo}");
   process.env.JILLS_TEST_JEV_KEY = "sk-test-not-real";
-  let reply: unknown = { label: "new", jill: "fix-bug", inputs: { task: "login 500" }, confidence: 0.9 };
-  const f: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) });
-  setJevFetch(f);
+  let reply: unknown = systemOne("new:fix-bug", 0.9);
+  setJevFetch(fakeFetch(() => reply));
   const repo = tmpRepo();
   const say = (m: string) => suggest({ home, session: "ign-jev", message: m, repo });
   assert.equal((await say("login gives 500")).action, "suggest");
-  reply = { label: "talk", confidence: 0.9 };
+  reply = systemOne("talk", 0.9);
   await say("ok");
   await say("ok");
-  reply = { label: "new", jill: "fix-bug", inputs: { task: "login 500" }, confidence: 0.9 };
-  assert.equal((await say("login still 500")).reason, "ignored; waiting for a new task");
-  reply = { label: "new", jill: "fix-bug", inputs: { task: "signup page crashes" }, confidence: 0.9 };
+  reply = systemOne("new:fix-bug", 0.9);
+  assert.equal((await say("login gives 500")).reason, "ignored; waiting for a new task");
   const fresh = await say("signup crashes too");
   assert.equal(fresh.action, "suggest");
-  assert.deepEqual(fresh.inputs, { task: "signup page crashes" });
+  assert.deepEqual(fresh.inputs, { task: "signup crashes too" });
 });
 
 // ---------------------------------------------------------------- P2: merge-back with a dirty parent

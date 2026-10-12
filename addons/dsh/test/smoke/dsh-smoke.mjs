@@ -49,18 +49,17 @@ const jev = createServer((req, res) => {
   req.on('data', chunk => { body += chunk })
   req.on('end', () => {
     jevRequests.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) })
-    const asked = JSON.parse(body).messages[1].content
-    const hello = /New message: "Please say hello/.test(asked)
-    const direct = /New message: "Please tidy/.test(asked)
-    const content = JSON.stringify(hello ? { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.93 }
-      : direct ? { label: 'new', jill: 'direct', inputs: {}, confidence: 0.91 } : { label: 'talk', confidence: 0.9 })
+    const asked = JSON.parse(body).state.latest_message
+    const route = asked.startsWith('Please say hello') ? 'new:hello' : asked.startsWith('Please tidy') ? 'new:direct' : 'talk'
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ choices: [{ message: { content } }] }))
+    res.end(JSON.stringify({ model: 'jev-1.13.0', answers: {
+      route: { type: 'choice', choice: route, probabilities: { [route]: 0.93, other: 0.07 }, confidence: 0.9 },
+      action: { type: 'noul', noul: 0.95 }, refers_back: { type: 'noul', noul: 0.05 } } }))
   })
 })
 jev.listen(0, '127.0.0.1')
 await once(jev, 'listening')
-const jevUrl = `http://127.0.0.1:${jev.address().port}/v1/chat/completions`
+const jevUrl = `http://127.0.0.1:${jev.address().port}/v1/systemone`
 // A worktree: false Jill, so the card's "no worktree" warning gets a visual check.
 await mkdir(join(jillsHome, 'jills', 'direct'), { recursive: true })
 await writeFile(join(jillsHome, 'jills', 'direct', 'JILL.md'), '---\nname: direct\ndescription: Tidy notes in your checkout\nworktree: false\nsteps:\n  a: {run: "true"}\n---\n')
@@ -68,7 +67,7 @@ await writeFile(join(jillsHome, 'config.yml'), [
   'auto: false',
   `jill_paths: [${JSON.stringify(join(repoRoot, 'examples'))}, ${JSON.stringify(join(jillsHome, 'jills'))}]`,
   'agent_paths: []',
-  `jev: { url: ${JSON.stringify(jevUrl)}, key_env: JILLS_SMOKE_JEV_KEY, model: typesafe/jev-router }`,
+  `jev: { url: ${JSON.stringify(jevUrl)}, key_env: JILLS_SMOKE_JEV_KEY, model: jev-latest }`,
   '',
 ].join('\n'))
 
@@ -150,16 +149,16 @@ try {
   const card = page.getByRole('group', { name: 'Jills suggestion: hello' })
   await card.waitFor({ timeout: 60000 })
   for (const name of ['Start', 'Edit', 'Not this', 'Never']) await card.getByRole('button', { name, exact: true }).waitFor()
-  await card.getByText('Aidan').waitFor()
+  await card.getByText('hello', { exact: false }).first().waitFor()
   await card.scrollIntoViewIfNeeded()
   await page.screenshot({ path: join(output, 'jills-dsh-card.png') })
   await page.emulateMedia({ colorScheme: 'light' })
   await page.screenshot({ path: join(output, 'jills-dsh-card-light.png') })
   await page.emulateMedia({ colorScheme: 'dark' })
 
-  // Edit shows the declared input with Jev's value; Start runs the Jill; the status line follows it.
+  // Edit shows the declared input (Jev fills none: `who` has a default); Start runs the Jill; the status line follows it.
   await card.getByRole('button', { name: 'Edit', exact: true }).click()
-  assert.equal(await card.getByRole('textbox', { name: 'who' }).inputValue(), 'Aidan')
+  assert.equal(await card.getByRole('textbox', { name: 'who' }).inputValue(), '')
   await card.getByRole('textbox', { name: 'who' }).fill('Aidan and team')
   await page.screenshot({ path: join(output, 'jills-dsh-edit.png') })
   await card.getByRole('button', { name: 'Start', exact: true }).click()
@@ -191,12 +190,11 @@ try {
   await page.emulateMedia({ colorScheme: 'dark' })
 
   assert.equal(jevRequests.length, 3, 'one Jev call per user message')
-  const helloRequest = jevRequests.find(r => /New message: "Please say hello/.test(r.body.messages[1].content))
+  const helloRequest = jevRequests.find(r => r.body.state.latest_message.startsWith('Please say hello'))
   assert.ok(helloRequest, 'Jev was asked about the hello message')
-  assert.equal(helloRequest.body.model, 'typesafe/jev-router')
+  assert.equal(helloRequest.body.model, 'jev-latest')
   // Jev reads the turns before the message, from the dsh Session log.
-  const lastTurns = /Last turns: (\[.*\])/.exec(helloRequest.body.messages[1].content)?.[1]
-  assert.deepEqual(JSON.parse(lastTurns), [
+  assert.deepEqual(helloRequest.body.state.recent_turns, [
     { role: 'user', text: earlier },
     { role: 'assistant', text: 'Sure. (scripted reply from the Jills smoke fixture)' },
   ])

@@ -153,7 +153,7 @@ export function loadCore(lib = ''): () => Promise<JillsCore> {
     : new URL('../../../dist/src/index.js', import.meta.url).href) as Promise<JillsCore>)
 }
 
-/** Jev's key from dsh's own credentials service (`ctx.credentials`; ref = jev.key_env's name, e.g. OPENROUTER_API_KEY). Never logged. */
+/** Jev's key from dsh's own credentials service (`ctx.credentials`; ref = jev.key_env's name, e.g. TYPESAFE_API_KEY). Never logged. */
 export function credentialsKey(get: () => { resolve(ref: string): Promise<{ value?: string } | undefined> } | undefined): BridgeOptions['jevKey'] {
   return async (name) => { const c = get(); return c && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? (await c.resolve(name))?.value : undefined }
 }

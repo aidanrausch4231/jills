@@ -11,6 +11,7 @@ const cli = join(root, "dist", "src", "cli.js");
 function jills(home: string, args: string[], opts: { cwd?: string; input?: string } = {}) {
   const env: NodeJS.ProcessEnv = { ...process.env, JILLS_HOME: home };
   delete env.OPENROUTER_API_KEY;
+  delete env.TYPESAFE_API_KEY;
   const r = spawnSync(process.execPath, [cli, ...args], { env, cwd: opts.cwd, input: opts.input ?? "", encoding: "utf8", timeout: 60_000 });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }

@@ -1,5 +1,5 @@
 // Tests for the Claude Code hook. Run after `pnpm build`: node --test 'addons/claude-code/test/*.test.mjs'
-// Temp JILLS_HOME, no network (no OpenRouter key -> keywords fallback).
+// Temp JILLS_HOME, no network (no TypeSafe key -> keywords fallback).
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -45,6 +45,7 @@ function setup(config = "") {
 function runHook(home, input, extraEnv = {}) {
   const env = { ...process.env, JILLS_HOME: home, ...extraEnv };
   delete env.OPENROUTER_API_KEY;
+  delete env.TYPESAFE_API_KEY;
   const r = spawnSync(process.execPath, [HOOK], {
     input: typeof input === "string" ? input : JSON.stringify(input),
     env,
@@ -188,17 +189,18 @@ distTest("a slow Jev reply inside jev.timeout_ms still reaches the user (hook do
     req.on("end", () =>
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ label: "new", jill: "fix-bug", confidence: 0.9 }) } }] }));
+        res.end(JSON.stringify({ model: "jev-1.13.0", answers: { route: { type: "choice", choice: "new:fix-bug", probabilities: { "new:fix-bug": 0.9, talk: 0.1 }, confidence: 0.8 }, action: { type: "noul", noul: 0.95 }, refers_back: { type: "noul", noul: 0.05 } } }));
       }, 1500),
     );
   });
   jev.listen(0, "127.0.0.1");
   await once(jev, "listening");
   try {
-    const url = `http://127.0.0.1:${jev.address().port}/v1/chat/completions`;
+    const url = `http://127.0.0.1:${jev.address().port}/v1/systemone`;
     const { home, repo } = setup(`jev: {url: ${JSON.stringify(url)}, key_env: JILLS_CC_SLOW_KEY, timeout_ms: 5000}\n`);
     const env = { ...process.env, JILLS_HOME: home, JILLS_CC_SLOW_KEY: "fake", JILLS_HOOK_TIMEOUT_MS: "500" };
     delete env.OPENROUTER_API_KEY;
+    delete env.TYPESAFE_API_KEY;
     const child = spawn(process.execPath, [HOOK], { env, stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     child.stdout.on("data", (c) => (out += c));

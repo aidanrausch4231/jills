@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJillsExtension, parseArgs, recentTurns, type JillsCore } from "../jills.ts";
 
 delete process.env.OPENROUTER_API_KEY;
+delete process.env.TYPESAFE_API_KEY;
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
 
@@ -151,20 +152,16 @@ describe("pi add-on: suggestions", () => {
     assert.equal(t.called("start").length, 0, "manual mode never starts on its own");
   });
 
-  it("Jev's key comes from Pi's own OpenRouter login (getApiKeyForProvider), never from a file", async () => {
+  it("Pi passes no key lookup: another provider's login (OpenRouter) never reaches TypeSafe", async () => {
     const t = setup();
     const asked: string[] = [];
     t.ctx.modelRegistry = { getApiKeyForProvider: async (p: string) => (asked.push(p), "sk-pi-login") };
     await t.emit("input", { type: "input", text: "please say hello to pi", source: "interactive" }, t.ctx);
     await t.emit("before_agent_start", { type: "before_agent_start", prompt: "x" }, t.ctx);
     const [args] = t.called("suggest");
-    assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), "sk-pi-login");
-    assert.deepEqual(asked, ["openrouter"]);
-    assert.equal(await args[0].jevKey("MY_OTHER_KEY"), undefined, "custom key_env: env var only, Pi's login not used");
-    assert.deepEqual(asked, ["openrouter"]);
+    assert.equal(args[0].jevKey, undefined, "core reads the env var named by jev.key_env");
+    assert.deepEqual(asked, [], "Pi's provider logins are never asked");
     assert.ok(!JSON.stringify(t.calls).includes("sk-pi-login") && !JSON.stringify(t.sent).includes("sk-pi-login"), "key never shown or sent");
-    delete t.ctx.modelRegistry; // older Pi without a registry: no key, core uses the env var
-    assert.equal(await args[0].jevKey("OPENROUTER_API_KEY"), undefined);
   });
 
   it("worktree: false suggestion shows 'no worktree: edits your checkout directly' (widget, notice, auto message)", async () => {

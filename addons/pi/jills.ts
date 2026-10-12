@@ -187,9 +187,8 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
   /** Ask Jev about one message; show the result; return text for the agent's context. */
   async function check(ctx: ExtensionContext, message: string): Promise<string | undefined> {
     const core = await getCore();
-    // Jev uses Pi's own OpenRouter login only for the default key_env; else (and as fallback) core reads the env var.
-    const jevKey = async (name: string) => (name === "OPENROUTER_API_KEY" ? ctx.modelRegistry?.getApiKeyForProvider?.("openrouter") : undefined);
-    const s: Suggestion = await core.suggest({ session: sessionKey(ctx), message, recent: recentTurns(ctx), cwd: ctx.cwd, home, jevKey });
+    // Jev is TypeSafe System One: core reads the env var named by jev.key_env. Pi's own provider logins are never passed on.
+    const s: Suggestion = await core.suggest({ session: sessionKey(ctx), message, recent: recentTurns(ctx), cwd: ctx.cwd, home });
     if (s.action !== "suggest" || !s.jill) return undefined;
     if (s.auto) {
       try {

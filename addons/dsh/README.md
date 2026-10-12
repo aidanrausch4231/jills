@@ -72,8 +72,8 @@ Configuration (all optional):
 
 - `JILLS_HOME` — Jills home (default `~/.jills`); or plugin config `home`.
 - `JILLS_LIB` — path to the Jills library `dist/src/index.js` (default: this repo's build); or plugin config `lib`.
-- Jev uses the harness's OpenRouter login; the env var is a fallback. The Host asks dsh's own credentials service
-  (`ctx.credentials`) for ref `OPENROUTER_API_KEY` (or the name in `jev.key_env`), then the Host's env var of that name.
+- Jev is TypeSafe System One (`TYPESAFE_API_KEY`). The Host asks dsh's own credentials service
+  (`ctx.credentials`) for exactly the name in `jev.key_env` (default `TYPESAFE_API_KEY`), then the Host's env var of that name.
   Without a key the keywords matcher answers. Jills never reads credential files and never logs the key.
 - Plugin config `maxAgeMs` — how old a message may be and still be sent to Jev (default 300000).
 

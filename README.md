@@ -51,9 +51,10 @@ auto: false                     # global auto/manual switch (jills auto on|off)
 agent_paths: [~/.jills/agents]  # agent runner plug-in: searched in order, first name wins (default $JILLS_HOME/agents)
 jill_paths: [~/.jills/jills]    # folders of <name>/JILL.md, first name wins
 jev:
-  model: typesafe/jev-router    # OpenRouter model
-  key_env: OPENROUTER_API_KEY   # fallback env var (and dsh credential ref) for the key; never logged
-  threshold: 0.7                # suggest only when confidence >= threshold
+  model: jev-latest             # TypeSafe System One model
+  url: https://api.typesafe.ai/v1/systemone
+  key_env: TYPESAFE_API_KEY     # env var (and dsh credential ref) for the key; never logged
+  threshold: 0.5                # suggest only when P(chosen Jill route) >= threshold (default 0.5)
 agent_cli: pi                   # pi or claude (Claude Code runner); other agent CLIs are add-ons
 # agent_bin: /path/to/pi        # optional binary override
 # claude_bin: /path/to/claude   # Claude Code runner: optional binary override
@@ -65,10 +66,14 @@ default_model: openai-codex/gpt-5.6-sol
 # default_timeout: 2h           # total limit for Jills that set no timeout (default 2h)
 ```
 
-Jev uses the harness's OpenRouter login; the env var is a fallback. Pi passes its own OpenRouter key
-(`ctx.modelRegistry.getApiKeyForProvider("openrouter")`, only while `key_env` is the default), the dsh add-on asks dsh's credentials service
-for the ref named by `key_env`; the CLI and MCP server use the env var only. The key is never logged,
-written to Jills state or run records, or sent to agents. No key or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
+Jev is [TypeSafe](https://docs.typesafe.ai) System One (`jev-latest`): one request per message with a
+`route` Choice (`talk`, `same`, `new:<jill>`, `none`) and two yes/no questions (`action`, `refers_back`), and real
+probabilities back. It never writes text. A Jill is suggested only when `route` is `new:<jill>`, its probability is
+at least `jev.threshold` and `action` is at least 0.5. Jev fills only a Jill's single required input that has no default,
+with your message (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
+`key_env` (the dsh add-on asks dsh's credentials service for exactly that name; Pi and other harnesses do not pass their
+own logins). The key is never logged, written to Jills state or run records, or sent to agents. No key, an HTTP error
+or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only
 `auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a
 plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `jev:` to the Jev matcher).
 
@@ -285,7 +290,7 @@ Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggesti
 
 ## Anti-nag rules (default `suggest` plug-in, per chat in `$JILLS_HOME/sessions/<id>.json`)
 
-- Suggest only when Jev labels the message `new` with confidence ≥ threshold.
+- Suggest only when Jev routes the message to a Jill (`new`) with probability ≥ threshold.
 - Dismissed ("Not this") → quiet for the rest of this chat.
 - A Jill running in this chat → quiet until it ends.
 - An ignored suggestion → wait for a new task: the ignored Jill (and any Jill already suggested in

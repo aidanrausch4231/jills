@@ -6,6 +6,7 @@ import { after } from "node:test";
 
 // Tests never use the network or a real key.
 delete process.env.OPENROUTER_API_KEY;
+delete process.env.TYPESAFE_API_KEY;
 
 const dirs: string[] = [];
 after(() => {

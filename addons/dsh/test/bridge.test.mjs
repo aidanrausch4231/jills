@@ -15,20 +15,25 @@ const lib = join(repoRoot, 'dist/src/index.js')
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'jills-dsh-test-')))
 process.env.JILLS_HOME = join(root, 'default-home') // never the real ~/.jills
 delete process.env.OPENROUTER_API_KEY
+delete process.env.TYPESAFE_API_KEY
 
 const jevRequests = []
-let jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+/** A System One reply: `route` is the chosen option id, `p` its probability. */
+const systemOne = (route, p) => ({ model: 'jev-1.13.0', answers: {
+  route: { type: 'choice', choice: route, probabilities: { [route]: p, other: 1 - p }, confidence: p },
+  action: { type: 'noul', noul: 0.95 }, refers_back: { type: 'noul', noul: 0.05 } } })
+let jevReply = systemOne('new:hello', 0.91)
 const jev = createServer((req, res) => {
   let body = ''
   req.on('data', c => { body += c })
   req.on('end', () => {
     jevRequests.push({ auth: req.headers.authorization, body: JSON.parse(body) })
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(jevReply) } }] }))
+    res.end(JSON.stringify(jevReply))
   })
 })
 let jevUrl = ''
-before(async () => { jev.listen(0, '127.0.0.1'); await once(jev, 'listening'); jevUrl = `http://127.0.0.1:${jev.address().port}/v1/chat/completions` })
+before(async () => { jev.listen(0, '127.0.0.1'); await once(jev, 'listening'); jevUrl = `http://127.0.0.1:${jev.address().port}/v1/systemone` })
 after(() => { jev.close() })
 
 let n = 0
@@ -73,17 +78,18 @@ test('Jev request shape and inputs come through the card', async () => {
   process.env.JILLS_TEST_JEV_KEY = 'test-key'
   try {
     jevRequests.length = 0
-    jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+    jevReply = systemOne('new:hello', 0.91)
     const { bridge, repo } = fixture({ jev: true })
     const card = await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
     assert.equal(card.kind, 'suggest')
     assert.equal(card.matcher, 'jev')
-    assert.deepEqual(card.inputs, { who: 'Aidan' })
+    assert.deepEqual(card.inputs, {}, 'hello declares only an input with a default: Jev fills nothing')
     assert.equal(card.confidence, 0.91)
     assert.equal(jevRequests.length, 1)
-    assert.equal(jevRequests[0].body.model, 'typesafe/jev-router')
+    assert.equal(jevRequests[0].body.model, 'jev-latest')
     assert.equal(jevRequests[0].auth, 'Bearer test-key')
-    assert.match(jevRequests[0].body.messages[1].content, /New message: "greet Aidan for me"/)
+    assert.equal(jevRequests[0].body.state.latest_message, 'greet Aidan for me')
+    assert.equal(jevRequests[0].body.questions.route.type, 'choice')
   } finally { delete process.env.JILLS_TEST_JEV_KEY }
 })
 
@@ -95,7 +101,7 @@ test('Jev uses the key from dsh credentials (resolve by jev.key_env name); env v
   process.env.JILLS_TEST_JEV_KEY = 'env-key'
   try {
     jevRequests.length = 0
-    jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+    jevReply = systemOne('new:hello', 0.91)
     const { bridge, repo, home } = fixture({ jev: true, jevKey: credentialsKey(() => credentials) })
     const card = await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
     assert.equal(card.matcher, 'jev')
@@ -109,7 +115,7 @@ test('Jev uses the key from dsh credentials (resolve by jev.key_env name); env v
     value = undefined // no stored credential: the env var named in config
     await bridge.suggest(msg({ sessionId: 'sess-k2', messageId: 'm2', text: 'greet Aidan again', cwd: repo }))
     assert.equal(jevRequests.at(-1).auth, 'Bearer env-key')
-    assert.equal(await credentialsKey(() => undefined)('OPENROUTER_API_KEY'), undefined, 'no credentials service: core uses the env var')
+    assert.equal(await credentialsKey(() => undefined)('TYPESAFE_API_KEY'), undefined, 'no credentials service: core uses the env var')
   } finally { delete process.env.JILLS_TEST_JEV_KEY }
 })
 
@@ -117,7 +123,7 @@ test('talk and history messages stay quiet; history never reaches Jev', async ()
   process.env.JILLS_TEST_JEV_KEY = 'test-key'
   try {
     jevRequests.length = 0
-    jevReply = { label: 'talk', confidence: 0.9 }
+    jevReply = systemOne('talk', 0.9)
     const { bridge, repo } = fixture({ jev: true })
     assert.equal((await bridge.suggest(msg({ text: 'how are you?', cwd: repo }))).kind, 'quiet')
     const old = await bridge.suggest(msg({ messageId: 'old', sentAt: Date.now() - 60 * 60_000, cwd: repo }))
@@ -292,7 +298,7 @@ test('Jev gets the last 3 turns before the message, not just the new message', a
   process.env.JILLS_TEST_JEV_KEY = 'test-key'
   try {
     jevRequests.length = 0
-    jevReply = { label: 'new', jill: 'hello', inputs: { who: 'Aidan' }, confidence: 0.91 }
+    jevReply = systemOne('new:hello', 0.91)
     const turns = [
       { role: 'user', text: 'u1' }, { role: 'assistant', text: 'a1' }, { role: 'user', text: 'u2' }, { role: 'assistant', text: 'a2' },
     ]
@@ -300,9 +306,9 @@ test('Jev gets the last 3 turns before the message, not just the new message', a
     const { bridge, repo } = fixture({ jev: true, agent })
     await bridge.suggest(msg({ text: 'greet Aidan for me', cwd: repo }))
     assert.deepEqual(agent.asked, [['sess-1', 'm1']])
-    const user = jevRequests[0].body.messages[1].content
-    assert.match(user, /Last turns: \[\{"role":"assistant","text":"a1"\},\{"role":"user","text":"u2"\},\{"role":"assistant","text":"a2"\}\]/)
-    assert.match(user, /New message: "greet Aidan for me"/)
+    const state = jevRequests[0].body.state
+    assert.deepEqual(state.recent_turns, [{ role: 'assistant', text: 'a1' }, { role: 'user', text: 'u2' }, { role: 'assistant', text: 'a2' }])
+    assert.equal(state.latest_message, 'greet Aidan for me')
   } finally { delete process.env.JILLS_TEST_JEV_KEY }
 })
 

@@ -1,4 +1,4 @@
-// Jev uses the harness's own OpenRouter login (SuggestOpts.jevKey); the env var is a fallback.
+// Jev uses the harness's own TypeSafe key (SuggestOpts.jevKey); the env var is a fallback.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { go, suggest, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
 import jevMatcher, { setJevFetch, type FetchLike } from "../src/plugins/matcher-jev.js";
 import type { MatchInput } from "../src/plugins/types.js";
+import { fakeFetch, systemOne } from "./jev-fixtures.js";
 import { tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
 const OWN = "sk-own-login-not-real-456";
@@ -15,13 +16,10 @@ type Call = { url: string; init: Parameters<FetchLike>[1] };
 
 function home() {
   const h = tmpHome("jev: {key_env: JILLS_TEST_OWN_KEY, threshold: 0.7}\n");
-  writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [task]\nsteps:\n  a: {run: echo}");
+  writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
   return h;
 }
-const fetchInto = (calls: Call[]): FetchLike => async (url, init) => {
-  calls.push({ url, init });
-  return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ label: "new", jill: "fix-bug", inputs: { task: "login" }, confidence: 0.9 }) } }] }) };
-};
+const fetchInto = (calls: Call[]): FetchLike => fakeFetch(systemOne("new:fix-bug", 0.9), calls);
 const filesUnder = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(join(dir, e.name)) : [join(dir, e.name)]));
 
@@ -72,7 +70,7 @@ test("only the built-in Jev matcher gets a key lookup, locked to jev.key_env; a 
   const file = join(tmp(), "spy-matcher.js");
   writeFileSync(file, `export default { slot: "matcher", apiVersion: 1, name: "spy", async match(input) { globalThis.__jillsSpy = { has: "jevKey" in input, type: typeof input.jevKey }; return undefined; } };`);
   const h = tmpHome(`plugins: [${file}]\njev: {key_env: JILLS_TEST_OWN_KEY}\n`);
-  writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [task]\nsteps:\n  a: {run: echo}");
+  writeJill(h, "fix-bug", "description: Fix a bug\nwhen: user reports a bug\ninputs: [{name: task, required: true}]\nsteps:\n  a: {run: echo}");
   const calls: Call[] = [];
   const asked: string[] = [];
   setJevFetch(fetchInto(calls));

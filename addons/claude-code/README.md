@@ -80,7 +80,7 @@ The hook skips prompts that start with `/`, `!` or `<` (system events such as `<
    `hooks.UserPromptSubmit` list; do not replace other hooks).
 5. Install the slash command:
    `mkdir -p ~/.claude/commands && cp commands/jills.md ~/.claude/commands/jills.md`
-6. For Jev itself, export the key named by `jev.key_env` (default `OPENROUTER_API_KEY`) in the shell that
+6. For Jev itself, export the key named by `jev.key_env` (default `TYPESAFE_API_KEY`, a TypeSafe System One key) in the shell that
    starts Claude Code. Without it the hook uses the `keywords:` fallback.
 
 Env knobs: `JILLS_HOME` (default `~/.jills`), `JILLS_LIB` (core entry, default `../../dist/src/index.js`),
