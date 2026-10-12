@@ -128,6 +128,20 @@ test("ignored suggestion: a rewording stays quiet, a new task of the same kind c
   assert.match(body.questions.route.criteria.same, /rewords a task already suggested \(even if the user ignored it\)/);
 });
 
+test("ignored suggestion, keywords matcher: a rewording stays quiet, different words bring the Jill back", async () => {
+  const home = tmpHome();
+  writeJill(home, "fix-bug", "description: Fix a bug\nkeywords: [login, crashes]\nworktree: false\nsteps:\n  a: {run: echo}");
+  const repo = tmpRepo();
+  const say = (m: string) => suggest({ home, session: "ign-kw", message: m, repo });
+  assert.equal((await say("login gives 500")).action, "suggest");
+  await say("ok");
+  await say("ok");
+  assert.equal((await say("login still gives 500")).reason, "ignored; waiting for a new task");
+  const fresh = await say("signup page crashes on submit");
+  assert.equal(fresh.action, "suggest");
+  assert.equal(fresh.matcher, "keywords");
+});
+
 // ---------------------------------------------------------------- P2: merge-back with a dirty parent
 
 test("merge-back with a dirty parent worktree: files and branch stay in step", async () => {

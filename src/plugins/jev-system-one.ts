@@ -25,7 +25,7 @@ export function buildSystemOneRequest(input: MatchInput, model: string): Record<
       latest_message: input.message,
       recent_turns: input.recent.slice(-3).map((t) => ({ role: t.role, text: t.text.slice(0, TURN_IN_STATE) })),
       already_suggested_or_running: input.already,
-      ...(input.suggestedTask ? { last_suggested_task: { jill: input.suggestedTask.jill, message: input.suggestedTask.task } } : {}),
+      ...(input.suggestedTask ? { last_suggested_task: { jill: input.suggestedTask.jill, message: input.suggestedTask.task.slice(0, 500) } } : {}),
       jills: input.jills.map((j) => ({ name: j.name, when: j.when ?? "", description: j.description })),
     },
     questions: {
@@ -61,7 +61,7 @@ export function parseSystemOne(body: unknown, input: MatchInput, threshold: numb
   const p = prob(probs[route.choice]);
   const action = prob(answers?.action?.noul);
   if (p === undefined || action === undefined) return undefined;
-  const base = { confidence: p, matcher: "jev", sameProb: prob(probs.same) ?? 0 };
+  const base = { confidence: p, matcher: "jev", sameProb: prob(probs.same) };
   const id = route.choice;
   if (id === "same") return { label: "same", ...base };
   if (!id.startsWith(NEW)) return { label: "talk", ...base };

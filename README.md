@@ -70,7 +70,7 @@ Jev is [TypeSafe](https://docs.typesafe.ai) System One (`jev-latest`): one reque
 `route` Choice (`talk`, `same`, `new:<jill>`, `none`) and two yes/no questions (`action`, `refers_back`), and real
 probabilities back. It never writes text. A Jill is suggested only when `route` is `new:<jill>`, its probability is
 at least `jev.threshold` and `action` is at least 0.5. Jev fills only a Jill's single required input that has no default,
-with your message. A plain-string input (`inputs: [task]`) is never filled by Jev or keywords: mark it `required: true` (map form, `inputs: [{name: task, required: true}]`) to have it filled (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
+with your message. Custom `jev.url` values are not guarded: the key goes wherever you point it. A plain-string input (`inputs: [task]`) is never filled by Jev or keywords: mark it `required: true` (map form, `inputs: [{name: task, required: true}]`) to have it filled (plus the last 3 turns, quoted, when `refers_back` is at least 0.5). The key is read from the env var named by
 `key_env` (the dsh add-on asks dsh's credentials service for exactly that name; Pi and other harnesses do not pass their
 own logins). The key is never logged, written to Jills state or run records, or sent to agents. No key, an HTTP error
 or a network error → the keywords matcher answers (`keywords:` in JILL.md). Core reads only

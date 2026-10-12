@@ -110,3 +110,17 @@ test("a non-TypeSafe key_env with the TypeSafe url sends nothing (fetch never ca
     delete process.env.OPENROUTER_API_KEY;
   }
 });
+
+test("a bad url returns undefined without a fetch or a key lookup; a non-TypeSafe key_env is refused before any lookup", async () => {
+  const calls: Call[] = [];
+  setJevFetch(fetchInto(calls));
+  process.env.JILLS_TEST_OWN_KEY = ENV;
+  const bad = tmpHome("jev: {url: not a url, key_env: JILLS_TEST_OWN_KEY}\n");
+  const base: MatchInput = { message: "x", recent: [], jills: [], already: [], config: loadConfig(bad) };
+  assert.equal(await jevMatcher.match(base), undefined);
+  const asked: string[] = [];
+  const other = tmpHome("jev: {key_env: OPENROUTER_API_KEY}\n");
+  assert.equal(await jevMatcher.match({ ...base, config: loadConfig(other), jevKey: () => (asked.push("x"), "k") }), undefined);
+  assert.deepEqual(asked, [], "the key is never even looked up");
+  assert.equal(calls.length, 0);
+});

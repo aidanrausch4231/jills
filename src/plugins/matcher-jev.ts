@@ -35,11 +35,13 @@ const jevMatcher: MatcherPlugin = {
   name: "jev",
   async match(input) {
     const jev = jevConfig(input.config);
+    // Never load or send another provider's key to TypeSafe (custom urls are not guarded).
+    let host = "";
+    try { host = new URL(jev.url).hostname.replace(/\.$/, ""); } catch { return undefined; }
+    if (host === "api.typesafe.ai" && jev.key_env !== "TYPESAFE_API_KEY") return undefined;
     const own: unknown = await Promise.resolve().then(() => input.jevKey?.()).catch(() => undefined);
     const key = (typeof own === "string" && own.trim()) || process.env[jev.key_env];
     if (!key) return undefined;
-    // Never send another provider's key to TypeSafe.
-    if (new URL(jev.url).hostname === "api.typesafe.ai" && (jev.key_env !== "TYPESAFE_API_KEY" || /OPENROUTER/i.test(jev.key_env))) return undefined;
     const f: FetchLike = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
     try {
       const res = await f(jev.url, {

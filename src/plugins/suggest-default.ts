@@ -5,6 +5,7 @@ import { NO_WORKTREE_NOTE } from "../jillfile.js";
 import { refreshRecord, TERMINAL } from "../runs.js";
 import { readJson, writeJsonAtomic } from "../util.js";
 import type { MatchResult, SuggestPlugin, Suggestion } from "./types.js";
+import { wordOverlap } from "./word-overlap.js";
 
 /**
  * The default chat policy around the matchers ("anti-nag"): at most one
@@ -56,8 +57,8 @@ function setMutes(home: string, repo: string, names: string[] | undefined): void
 const isMuted = (list: string[], jill: string) => list.includes("*") || list.includes(jill);
 
 /** Jev (not keywords) named another Jill, or the same Jill for a new task (p(same) < 0.2) rather than a rewording. */
-function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"]): boolean {
-  if (m.matcher === "keywords") return false;
+function isNewTarget(m: MatchResult, last: SessionState["lastSuggestion"], message: string): boolean {
+  if (m.matcher === "keywords") return !!last?.task && wordOverlap(message, last.task) < 0.3; // few shared words: not a rewording
   if (!last || last.jill !== m.jill) return true;
   if (m.sameProb !== undefined) return m.sameProb < 0.2; // Jev's own judgment: a new task, not a rewording
   return Object.entries(m.inputs ?? {}).some(([k, v]) => String(v).trim() !== "" && (last.inputs ?? {})[k] !== v);
@@ -106,15 +107,14 @@ const defaultSuggest: SuggestPlugin = {
     const muted = o.repo ? (mutes(home)[o.repo] ?? []) : [];
     const jills = c.jills.filter((j) => !isMuted(muted, j.name));
     if (!jills.length) return quiet("no Jills to suggest");
-    const m = await c.match({ message: o.message, recent: o.recent, jills, already: [...new Set(s.suggested)], config: c.config, ...(last?.task ? { suggestedTask: { jill: last.jill, task: last.task } } : {}) });
+    const m = await c.match({ message: o.message, recent: o.recent, jills, already: [...new Set(s.suggested)], config: c.config, ...(last?.task ? { suggestedTask: { jill: last.jill, task: last.task.slice(0, 500) } } : {}) });
     if (!m) return quiet("no matcher answered");
     const base = { label: m.label, matcher: m.matcher, confidence: m.confidence };
     if (m.label !== "new" || !m.jill) return quiet(m.label === "same" ? "same task as before" : "just talk", base);
     if (s.waitingForNew) {
-      // Ignored → wait for a new task: the ignored Jill (or one already suggested
-      // here) stays quiet for the same task; a new task (Jev's p(same) < 0.2) or another Jill comes back. Keyword hits are never "new".
+      // Ignored: the ignored Jill (or one already suggested) stays quiet for the same task; a new task or another Jill comes back.
       const ignored = new Set([...(last ? [last.jill] : []), ...s.suggested]);
-      if (ignored.has(m.jill) && !isNewTarget(m, last)) return quiet("ignored; waiting for a new task", { ...base, jill: m.jill });
+      if (ignored.has(m.jill) && !isNewTarget(m, last, o.message)) return quiet("ignored; waiting for a new task", { ...base, jill: m.jill });
       s.waitingForNew = false;
     }
     if (m.confidence < threshold) return quiet(`not confident enough (${m.confidence} < ${threshold})`, { ...base, jill: m.jill });
