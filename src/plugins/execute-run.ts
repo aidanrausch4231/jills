@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { jillsHome, loadConfig } from "../config.js";
 import { HEARTBEAT_MS, RunEngine, type EventListener } from "../engine.js";
 import { scanJills } from "../jillfile.js";
-import { bootId, stopTagged } from "../proc.js";
+import { bootId, signal, stopTagged } from "../proc.js";
 import { loadRecord, markTerminal, saveRecord, stuckReason, TERMINAL, type RunRecord } from "../runs.js";
 import { loadPlugins } from "./index.js";
 
@@ -19,7 +19,10 @@ export async function executeRun(id: string, o: Options = {}): Promise<RunRecord
   if (!o.engine && r.state !== "queued") throw new Error(`run ${id} is ${r.state}, not queued`);
   if (o.engine) {
     if (!["queued", "running", "stuck", "failed"].includes(r.state)) throw new Error(`cannot resume run ${id}: ${r.state}`);
-    const gone = stuckReason(r, previousBeat) === "the runner process is gone";
+    // Before an engine ever starts, only a live executor supervisor can own the run.
+    const supervisorAlive = r.executorPid !== undefined && r.executorPid > 0 &&
+      (!r.executorBootId || r.executorBootId === bootId()) && signal(r.executorPid, 0);
+    const gone = r.pid === undefined ? !supervisorAlive : stuckReason(r, previousBeat) === "the runner process is gone";
     if ((r.state !== "queued" || r.pid !== undefined) && !gone) throw new Error(`cannot resume run ${id}: runner is still alive (or its death cannot be verified)`);
   }
   if (!o.engine && plugins.executor) {

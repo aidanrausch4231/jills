@@ -7,6 +7,7 @@ import { check, executeRun, start, status, stop, wait } from "../src/api.js";
 import { loadConfig } from "../src/config.js";
 import json from "../src/plugins/backend-json.js";
 import { loadPlugins, validatePlugin } from "../src/plugins/index.js";
+import { bootId } from "../src/proc.js";
 import { runLogDir, type RunRecord } from "../src/runs.js";
 import { sleep } from "../src/util.js";
 import { tmp, tmpHome, tmpRepo, writeJill } from "./helpers.js";
@@ -64,6 +65,47 @@ steps:
     assert.deepEqual(after.events.filter((e) => e.type === "step-started").map((e) => e.step), ["second", "third"]);
   });
 }
+
+test("engine CLI resumes a failed runner-never-started record without a pid", async () => {
+  const home = tmpHome();
+  writeJill(home, "flow", "worktree: false\nsteps:\n  first: {run: echo recovered}");
+  const r = queued(home);
+  r.created = "2000-01-01T00:00:00Z";
+  json.save(home, r);
+  const failed = await status(r.id, { home });
+  assert.equal(failed?.state, "failed");
+  assert.equal(failed?.error, "runner never started");
+  assert.equal(failed?.pid, undefined);
+  const result = spawnSync(process.execPath, [cli, "engine", r.id], { env: { ...process.env, JILLS_HOME: home }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const after = json.load(home, r.id)!;
+  assert.equal(after.state, "done");
+  assert.equal(after.id, r.id);
+  assert.equal(readFileSync(after.steps.first!.log!, "utf8").trim(), "recovered");
+  assert.ok(after.events.some((e) => e.note === "resumed (0 steps already done)"));
+});
+
+test("missing engine pid resumes only when the executor supervisor is absent or gone", async () => {
+  const home = tmpHome();
+  writeJill(home, "flow", "worktree: false\nsteps:\n  first: {run: echo recovered}");
+  for (const state of ["running", "stuck", "failed"] as const) {
+    for (const owner of ["absent", "dead", "previous-boot", "live", "unknown-boot"] as const) {
+      const r = queued(home, `${state}-${owner}`);
+      r.state = state;
+      if (owner !== "absent") r.executorPid = owner === "dead" ? 99_999_999 : process.pid;
+      r.executorBootId = owner === "previous-boot" ? "previous-boot" : owner === "unknown-boot" ? undefined : bootId();
+      json.save(home, r);
+      if (owner === "live" || owner === "unknown-boot") {
+        const before = json.load(home, r.id);
+        await assert.rejects(executeRun(r.id, { home, engine: true }), /runner is still alive/);
+        assert.deepEqual(json.load(home, r.id), before);
+      } else {
+        const after = await executeRun(r.id, { home, engine: true });
+        assert.equal(after.state, "done", after.error);
+      }
+    }
+  }
+});
 
 test("engine CLI refuses live engines (including hung ones) and done runs", () => {
   const home = tmpHome();
