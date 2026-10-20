@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
+import { DEFAULT_TIMEOUT, jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
@@ -10,7 +10,7 @@ import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
 import { listRecords, loadHeartbeat, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, type RunRecord } from "./runs.js";
-import { newId, sleep, writeFileAtomic } from "./util.js";
+import { newId, parseLimit, sleep, writeFileAtomic } from "./util.js";
 
 /** `home`: Jills home; defaults to $JILLS_HOME or ~/.jills. */
 export type BaseOpts = { home?: string };
@@ -113,6 +113,8 @@ async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record:
   const id = newId();
   const logDir = runLogDir(c.config.home, id);
   const record: RunRecord = { version: 1, id, jill: j.name, jillPath: j.path, inputs, state: "queued", created: new Date().toISOString(), repo, session: o.session, logDir, steps: {}, events: [] };
+  // Executors need the effective limit before the engine starts (same fallback and clamp).
+  record.timeLimitMs = [j.timeout, c.config.default_timeout, DEFAULT_TIMEOUT].map(parseLimit).find((ms) => ms !== undefined)!;
   mkdirSync(logDir, { recursive: true });
   saveRecord(c.config.home, record, c.plugins.backend);
   return { c, record };

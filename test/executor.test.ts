@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { check, executeRun, start, status, stop, wait } from "../src/api.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, setConfigValue } from "../src/config.js";
 import json from "../src/plugins/backend-json.js";
 import { loadPlugins, validatePlugin } from "../src/plugins/index.js";
 import { bootId } from "../src/proc.js";
@@ -202,6 +202,28 @@ function executorHome(body: string) {
   `);
   return home;
 }
+
+test("prepared runs pass the effective Jill/config/default timeout to executors", async (t) => {
+  for (const [timeout, fallback, expected] of [
+    ["1m", "3m", 60_000], [undefined, "3m", 180_000],
+    [undefined, undefined, 7_200_000], [0, "3m", 180_000],
+    [0, 0, 7_200_000], ["999999h", "3m", 2_147_483_647],
+  ] as const) {
+    const home = executorHome(`
+      writeFileSync(join(ctx.config.home, 'limit'), String(run.timeLimitMs));
+      throw Error('captured executor input');
+    `);
+    if (fallback !== undefined) setConfigValue("default_timeout", fallback, home);
+    writeJill(home, "flow", `worktree: false\n${timeout === undefined ? "" : `timeout: ${timeout}\n`}steps:\n  first: {run: echo never}`);
+    const r = await start("flow", { home, cwd: tmp() });
+    t.after(() => stop(r.id, { home, graceMs: 100 }));
+    assert.equal(r.timeLimitMs, expected);
+    assert.equal(json.load(home, r.id)?.timeLimitMs, expected);
+    const after = await wait(r.id, { home, timeoutMs: 12_000, pollMs: 30 });
+    assert.match(after.record.error!, /captured executor input/);
+    assert.equal(readFileSync(join(home, "limit"), "utf8"), String(expected));
+  }
+});
 
 test("a fake executor spawns the engine CLI and drives a real detached run to done", async (t) => {
   const home = executorHome(`
