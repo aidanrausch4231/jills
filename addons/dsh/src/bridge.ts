@@ -57,7 +57,7 @@ export interface JillsCore {
   /** Start a detached run. */
   start(jill: string, o: { inputs?: Record<string, string>; cwd?: string; session?: string; home?: string }): Promise<CoreRunRecord>
   /** Read one run record. */
-  status(id: string, o?: { home?: string }): CoreRunRecord | undefined
+  status(id: string, o?: { home?: string }): Promise<CoreRunRecord | undefined>
   /** Saved Jills. */
   listJills(o?: { home?: string }): Promise<{ name: string; inputs: string[] }[]>
   /** Apply a chat control; the bridge only sends dismiss (quiet this chat). */
@@ -293,7 +293,7 @@ export class JillsBridge {
   /** Current status line of a run. */
   async status(runId: string): Promise<RunLine> {
     const core = await this.core()
-    const record = core.status(runId, this.opts())
+    const record = await core.status(runId, this.opts())
     if (!record) throw new Error(`no Jills run ${runId}`)
     return runLine(core, record)
   }

@@ -8,7 +8,8 @@ import verdictCheck from "./check-verdict.js";
 import jevMatcher from "./matcher-jev.js";
 import worktreeIsolation from "./isolation-worktree.js";
 import defaultSuggest from "./suggest-default.js";
-import { PLUGIN_API_VERSION, type AnyPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
+import jsonBackend from "./backend-json.js";
+import { PLUGIN_API_VERSION, type AnyPlugin, type BackendPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
 
 export interface PluginSet {
   /** Tried in order; the first one that answers wins. */
@@ -21,6 +22,9 @@ export interface PluginSet {
   hooks: HookPlugin[];
   /** Chat policy around the matchers (anti-nag, mutes); the last one loaded wins. */
   suggest: SuggestPlugin;
+  backends: Map<string, BackendPlugin>;
+  /** Selected by config `backend`, default json. */
+  backend: BackendPlugin;
 }
 
 export function builtinPlugins(): PluginSet {
@@ -31,6 +35,8 @@ export function builtinPlugins(): PluginSet {
     checks: new Map([exitCodeCheck, verdictCheck].map((c) => [c.name, c])),
     hooks: [],
     suggest: defaultSuggest,
+    backends: new Map([[jsonBackend.name, jsonBackend]]),
+    backend: jsonBackend,
   };
 }
 
@@ -46,10 +52,14 @@ export function validatePlugin(p: unknown, source: string): AnyPlugin {
     check: ["check"],
     hook: ["on"],
     suggest: ["suggest", "chat"],
+    backend: ["save", "load", "list", "beat", "loadBeat"],
   };
   const slot = String(o.slot);
   if (!need[slot]) throw new Error(`${source}: unknown plug-in slot "${slot}" (v1 slots: ${Object.keys(need).join(", ")})`);
   for (const fn of need[slot]!) if (typeof o[fn] !== "function") throw new Error(`${source}: ${slot} plug-in is missing ${fn}()`);
+  if (slot === "backend") for (const fn of ["sweep", "check"]) {
+    if (o[fn] !== undefined && typeof o[fn] !== "function") throw new Error(`${source}: backend plug-in ${fn} must be a function`);
+  }
   return p as AnyPlugin;
 }
 
@@ -73,6 +83,9 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
     case "suggest":
       set.suggest = p;
       break;
+    case "backend":
+      set.backends.set(p.name, p);
+      break;
   }
 }
 
@@ -83,6 +96,11 @@ export async function loadPlugins(config: JillsConfig): Promise<PluginSet> {
     const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
     addPlugin(set, validatePlugin(mod.default, file));
   }
+  const name = config.raw.backend ?? "json";
+  const backend = typeof name === "string" ? set.backends.get(name) : undefined;
+  if (!backend) throw new Error(`no backend plug-in "${String(name)}"`);
+  set.backend = backend;
+  backend.sweep?.(config.home, config);
   return set;
 }
 

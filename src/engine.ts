@@ -5,9 +5,9 @@ import { ancestors, checkNesting, type JillDef, type StepDef } from "./jillfile.
 import type { PluginSet } from "./plugins/index.js";
 import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
 import { bootId } from "./proc.js";
-import { heartbeatPath, loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
+import { loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
 import { renderShellTemplate, renderTemplate, type TemplateVars } from "./template.js";
-import { MAX_TIMER_MS, parseLimit, writeJsonAtomic } from "./util.js";
+import { MAX_TIMER_MS, parseLimit } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
@@ -18,7 +18,7 @@ type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; pre
 type Loop = { round: number; feedback: string };
 
 const OUTPUT_LIMIT = 8000;
-/** How often a runner writes its heartbeat file (never the run record). */
+/** How often a runner writes its heartbeat (never the run record). */
 export const HEARTBEAT_MS = 5_000;
 
 /**
@@ -88,7 +88,7 @@ export class RunEngine {
   /** True once an observer wrote a terminal state on disk: then stop our steps and keep its record. */
   private isLost(): boolean {
     if (this.lost || TERMINAL.has(this.written)) return this.lost;
-    const disk = loadRecord(this.o.config.home, this.record.id);
+    const disk = loadRecord(this.o.config.home, this.record.id, this.o.plugins.backend);
     if (disk && TERMINAL.has(disk.state)) {
       this.lost = true;
       this.halt(disk.state as Outcome, `marked ${disk.state} by an observer: ${disk.error ?? ""}`);
@@ -98,7 +98,7 @@ export class RunEngine {
 
   private save(): void {
     if (this.isLost()) return;
-    saveRecord(this.o.config.home, this.record);
+    saveRecord(this.o.config.home, this.record, this.o.plugins.backend);
     this.written = this.record.state;
   }
 
@@ -125,9 +125,9 @@ export class RunEngine {
     for (const k of ["JILLS_BASE_REPO", "JILLS_BASE_BRANCH", "JILLS_RUN_BRANCH"]) delete process.env[k]; // only a merges: true step gets these
     const since = String(process.hrtime.bigint());
     const boot = bootId();
-    const beat = () => writeJsonAtomic(heartbeatPath(c.home, r.id), { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
+    const beat = () => this.o.plugins.backend.beat(c.home, r.id, { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
     beat();
-    // A beat writes only its own file; it then reads the record to notice an observer's stuck mark.
+    // A beat writes separately; it then reads the record to notice an observer's stuck mark.
     const heart = setInterval(() => (beat(), this.isLost()), HEARTBEAT_MS).unref();
     this.emit("started", undefined, r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
@@ -165,7 +165,7 @@ export class RunEngine {
       ext?.removeEventListener("abort", onStop);
     }
     await Promise.all(this.hooks);
-    return this.lost ? (loadRecord(c.home, r.id) ?? r) : r;
+    return this.lost ? (loadRecord(c.home, r.id, this.o.plugins.backend) ?? r) : r;
   }
 
   private finish(outcome: Outcome): void {

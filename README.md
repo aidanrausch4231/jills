@@ -332,6 +332,11 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 { slot: "suggest", suggest(input: { session; message; recent; repo? }, ctx: { jills; config; match }): Promise<Suggestion>; chat(session, change: ChatChange, config): LastSuggestion | undefined }
 ```
 
+The `backend` slot stores run records and heartbeats through synchronous `save`, `load`, `list`, `beat`, and `loadBeat` methods.
+Set `backend: <name>` in config to select one; unset uses built-in `json` (existing run files work unchanged).
+Optional `sweep(home, config)` runs once after plug-ins load (never signals processes); `check(config)` adds diagnostics.
+Logs remain plain files in `RunRecord.logDir`. The library's `status()` is now async so it can load configured ESM backends.
+
 Built-ins: matcher `jev` (the only default matcher; no fallback); runner `command` and `agent`; isolation `worktree`;
 check `exit-code` and `verdict`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each
 finished run's one-line result to a file:

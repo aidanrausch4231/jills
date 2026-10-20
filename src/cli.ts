@@ -108,11 +108,11 @@ const COMMANDS: Record<string, Command> = {
   }],
   status: ["status [run] [--json]                  never signals anything; a hung or dead runner shows as stuck", async (rest, f, out) => {
     if (!rest[0]) {
-      const all = status();
+      const all = await status();
       out(all, () => (all.length ? all.slice(0, 20).map(resultLine).join("\n") : "no runs"));
       return EXIT.ok;
     }
-    const r = status(rest[0]);
+    const r = await status(rest[0]);
     if (!r) console.error(`no run ${rest[0]}`);
     else if (f.json) out(r, () => "");
     else printRecord(r);

@@ -62,9 +62,9 @@ test("start spawns a detached runner; wait and status report the result", async 
   assert.equal(w.record.state, "done", w.record.error);
   assert.match(w.line, new RegExp(`^jills run ${rec.id} done: hello \\| branch jills/hello-${rec.id}`));
   assert.equal(git(repo, "show", `jills/hello-${rec.id}:hello.txt`).split("\n")[0], "hello tests");
-  const one = status(rec.id, { home })!;
+  const one = (await status(rec.id, { home }))!;
   assert.equal(one.state, "done");
-  assert.ok(status(undefined, { home }).some((r) => r.id === rec.id));
+  assert.ok((await status(undefined, { home })).some((r) => r.id === rec.id));
   assert.ok(Object.keys(one.steps).includes("count#2"));
 });
 
@@ -85,5 +85,5 @@ test("wait on an unknown run rejects", async () => {
   mkdirSync(join(home, "runs"), { recursive: true });
   writeFileSync(join(home, "runs", "junk.json"), "{not json");
   await assert.rejects(wait("nope", { home }), /no run nope/);
-  assert.deepEqual(status(undefined, { home }), []);
+  assert.deepEqual(await status(undefined, { home }), []);
 });

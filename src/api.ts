@@ -78,7 +78,7 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   const merges = (j: JillDef | undefined, seen = new Set<string>()): boolean => !!j && j.steps.some((s) => s.merges || (!!s.jill && !seen.has(s.jill) && merges(c.lookup(s.jill), seen.add(s.jill))));
   const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree, merges: merges(j) }));
   const input = { session: o.session, message: o.message, recent: (o.recent ?? []).slice(-3), repo: await resolveRepo(o.repo, o.cwd) };
-  const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, match });
+  const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, backend: c.plugins.backend, match });
   return s.jill && s.inputs ? { ...s, inputs: declaredInputs(c.lookup(s.jill), s.inputs) } : s;
 }
 
@@ -112,7 +112,7 @@ async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record:
   const logDir = runLogDir(c.config.home, id);
   const record: RunRecord = { version: 1, id, jill: j.name, jillPath: j.path, inputs, state: "queued", created: new Date().toISOString(), repo, session: o.session, logDir, steps: {}, events: [] };
   mkdirSync(logDir, { recursive: true });
-  saveRecord(c.config.home, record);
+  saveRecord(c.config.home, record, c.plugins.backend);
   return { c, record };
 }
 
@@ -138,7 +138,7 @@ export async function start(jillName: string, o: StartOpts = {}): Promise<RunRec
 /** Execute a queued run in this process (used by the detached runner). */
 export async function executeRun(id: string, o: BaseOpts & { onEvent?: EventListener; signal?: AbortSignal } = {}): Promise<RunRecord> {
   const c = await context(o);
-  const r = loadRecord(c.config.home, id);
+  const r = loadRecord(c.config.home, id, c.plugins.backend);
   if (!r) throw new Error(`no run ${id}`);
   if (r.state !== "queued") throw new Error(`run ${id} is ${r.state}, not queued`);
   return new RunEngine(r, { ...c, onEvent: o.onEvent, signal: o.signal }).execute();
@@ -159,10 +159,10 @@ export interface WaitOpts extends BaseOpts {
 
 /** Block until a run is done/failed/stuck/needs-you (or timeoutMs passes); returns a one-line result. */
 export async function wait(id: string, o: WaitOpts = {}): Promise<{ record: RunRecord; timedOut: boolean; line: string }> {
-  const home = homeOf(o);
+  const { config: { home }, plugins: { backend } } = await context(o);
   const t0 = Date.now();
   for (let seen = -1; ; await sleep(o.pollMs ?? 250)) {
-    const r = refreshRecord(home, id, o.staleMs);
+    const r = refreshRecord(home, id, o.staleMs, backend);
     if (!r) throw new Error(`no run ${id}`);
     if (r.events.length !== seen) o.onUpdate?.(r);
     seen = r.events.length;
@@ -172,12 +172,12 @@ export async function wait(id: string, o: WaitOpts = {}): Promise<{ record: RunR
 }
 
 /** One run's record, or the recent runs when no id is given. Never signals anything. */
-export function status(id: string, o?: BaseOpts): RunRecord | undefined;
-export function status(id?: undefined, o?: BaseOpts): RunRecord[];
-export function status(id?: string, o: BaseOpts = {}): RunRecord | RunRecord[] | undefined {
-  const home = homeOf(o);
-  if (id) return refreshRecord(home, id);
-  return listRecords(home).map((r) => (TERMINAL.has(r.state) ? r : (refreshRecord(home, r.id) ?? r)));
+export function status(id: string, o?: BaseOpts): Promise<RunRecord | undefined>;
+export function status(id?: undefined, o?: BaseOpts): Promise<RunRecord[]>;
+export async function status(id?: string, o: BaseOpts = {}): Promise<RunRecord | RunRecord[] | undefined> {
+  const { config: { home }, plugins: { backend } } = await context(o);
+  if (id) return refreshRecord(home, id, undefined, backend);
+  return listRecords(home, backend).map((r) => (TERMINAL.has(r.state) ? r : (refreshRecord(home, r.id, undefined, backend) ?? r)));
 }
 
 /**
@@ -186,12 +186,12 @@ export function status(id?: string, o: BaseOpts = {}): RunRecord | RunRecord[] |
  * records its own outcome; otherwise the run is recorded as failed here.
  */
 export async function stop(id: string, o: BaseOpts & { graceMs?: number } = {}): Promise<{ record: RunRecord; pids: number[] }> {
-  const home = homeOf(o);
-  const r = loadRecord(home, id);
+  const { config: { home }, plugins: { backend } } = await context(o);
+  const r = loadRecord(home, id, backend);
   if (!r) throw new Error(`no run ${id}`);
-  const pids = await stopTagged(id, loadHeartbeat(home, id)?.bootId, o.graceMs);
-  const after = loadRecord(home, id) ?? r;
-  return { record: TERMINAL.has(after.state) ? after : (markTerminal(home, after, "failed", "stopped by jills stop") ?? after), pids };
+  const pids = await stopTagged(id, loadHeartbeat(home, id, backend)?.bootId, o.graceMs);
+  const after = loadRecord(home, id, backend) ?? r;
+  return { record: TERMINAL.has(after.state) ? after : (markTerminal(home, after, "failed", "stopped by jills stop", undefined, backend) ?? after), pids };
 }
 
 /**
@@ -247,7 +247,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
   const errors = [...scan.errors];
   for (const [n, paths] of scan.duplicates) warnings.push(`Jill "${n}" found more than once; using ${paths[0]} (also: ${paths.slice(1).join(", ")})`);
   for (const p of c.config.jill_paths) if (!existsSync(p)) warnings.push(`jill path ${p} does not exist`);
-  for (const r of c.plugins.runners) {
+  for (const r of [...c.plugins.runners, c.plugins.backend]) {
     const found = r.check?.(c.config);
     errors.push(...(found?.errors ?? []));
     warnings.push(...(found?.warnings ?? []));
