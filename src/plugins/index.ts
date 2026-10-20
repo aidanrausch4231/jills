@@ -101,7 +101,10 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
 /** Built-ins plus single-file plug-ins listed in config `plugins:` (those go first). */
 export async function loadPlugins(config: JillsConfig, storageOnly = false): Promise<PluginSet> {
   const set = builtinPlugins();
+  const name = config.raw.backend ?? "json";
   for (const file of config.plugins) {
+    // Recovery needs only storage: JSON imports nothing; custom storage stops at its match.
+    if (storageOnly && typeof name === "string" && set.backends.has(name)) break;
     try {
       const mod = (await import(pathToFileURL(file).href)) as { default?: { slot?: string } };
       if (!storageOnly || mod.default?.slot === "backend") addPlugin(set, validatePlugin(mod.default, file));
@@ -110,7 +113,6 @@ export async function loadPlugins(config: JillsConfig, storageOnly = false): Pro
       console.warn(`jills: ignoring unrelated plug-in ${file}: ${(e as Error).message}`);
     }
   }
-  const name = config.raw.backend ?? "json";
   const backend = typeof name === "string" ? set.backends.get(name) : undefined;
   if (!backend) throw new Error(`no backend plug-in "${String(name)}"`);
   set.backend = backend;

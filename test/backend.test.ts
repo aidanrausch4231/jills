@@ -107,6 +107,28 @@ test("status/wait/stop tolerate a broken unrelated plug-in for JSON and custom s
   }
 });
 
+test("recovery skips unrelated initialization for default/explicit JSON and after a named backend", { timeout: 5000 }, async () => {
+  for (const name of [undefined, "json", "memory"]) {
+    const home = name === "memory" ? (await memoryHome()).home : tmpHome();
+    const { backend } = await loadPlugins(loadConfig(home));
+    const r = record(home, "no-imports");
+    backend.save(home, r);
+    const marker = join(home, "imported");
+    writeFileSync(join(home, "hang.mjs"), `
+      import { writeFileSync } from 'node:fs';
+      writeFileSync(${JSON.stringify(marker)}, 'unexpected initialization');
+      await new Promise(() => {});
+      export default { slot: 'hook', apiVersion: 1, name: 'hang', on() {} };
+    `);
+    writeFileSync(join(home, "config.yml"), `${name ? `backend: ${name}\n` : ""}plugins: [${name === "memory" ? "./memory.mjs, " : ""}./hang.mjs]\n`);
+    assert.equal((await status(r.id, { home }))?.state, "queued");
+    assert.equal((await status(undefined, { home }))[0]?.id, r.id);
+    assert.equal((await wait(r.id, { home, timeoutMs: 0 })).timedOut, true);
+    assert.equal((await stop(r.id, { home })).record.state, "failed");
+    assert.equal(existsSync(marker), false);
+  }
+});
+
 test("an unknown backend fails loading, check, and cold status instead of using JSON", async () => {
   const home = tmpHome("backend: missing\n");
   await assert.rejects(loadPlugins(loadConfig(home)), /no backend plug-in "missing"/);
