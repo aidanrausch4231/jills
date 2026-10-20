@@ -1,0 +1,9 @@
+{
+  "name": "jills",
+  "version": "0.1.0",
+  "description": "Jills in Claude Code: Jev's Jill suggestions as a card with buttons, live run progress in a pane, a status row and a toast when a run ends.",
+  "author": {
+    "name": "aidanrausch4231"
+  },
+  "types": "./types/index.d.ts"
+}

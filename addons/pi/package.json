@@ -1,0 +1,16 @@
+{
+  "name": "jills-pi",
+  "version": "0.1.0",
+  "description": "Jills add-on for Pi 1.0.4: one extension file (jills.ts).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "node --test --test-timeout=90000 test/jills-pi.test.ts",
+    "check": "pnpm run typecheck && pnpm run test"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4"
+  }
+}

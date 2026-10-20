@@ -1,0 +1,82 @@
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { dirname } from "node:path";
+import { signal, taggedPids } from "../proc.js";
+import type { RunnerPlugin, StepRunResult } from "./types.js";
+
+export interface SpawnOpts {
+  cmd: string;
+  args: string[];
+  cwd: string;
+  logPath: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Text written to the process's stdin (else stdin is closed). */
+  input?: string;
+}
+
+/**
+ * Run a process in its own process group, output to logPath. Only the runner
+ * calls this: on timeout or abort it stops the group it spawned (SIGTERM, then SIGKILL).
+ * Once the leader is reaped its pid (= the group id) may be reused, so the group
+ * is then signaled only while a member still carries this run's JILLS_RUN_ID.
+ */
+export function spawnLogged(o: SpawnOpts): Promise<StepRunResult> {
+  mkdirSync(dirname(o.logPath), { recursive: true });
+  const fd = openSync(o.logPath, "a");
+  return new Promise((resolve) => {
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const runId = o.env?.JILLS_RUN_ID;
+    const child = spawn(o.cmd, o.args, { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: [o.input === undefined ? "ignore" : "pipe", fd, fd], detached: true });
+    child.stdin?.on("error", () => {}).end(o.input); // a child that exits without reading must not crash us
+    const pid = child.pid;
+    const killGroup = (sig: NodeJS.Signals) => {
+      if (pid && (!settled || (runId && taggedPids(runId, pid).length))) signal(-pid, sig);
+    };
+    const stop = () => {
+      killGroup("SIGTERM");
+      killTimer ??= setTimeout(() => killGroup("SIGKILL"), 2000).unref();
+    };
+    const onAbort = () => {
+      aborted = true;
+      stop();
+    };
+    const timer = o.timeoutMs && o.timeoutMs > 0 ? setTimeout(() => ((timedOut = true), stop()), o.timeoutMs) : undefined;
+    if (o.signal?.aborted) onAbort();
+    else o.signal?.addEventListener("abort", onAbort, { once: true });
+    const finish = (r: StepRunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      o.signal?.removeEventListener("abort", onAbort);
+      if (timedOut || aborted) killGroup("SIGKILL"); // no tagged grandchild survives the reaped leader
+      closeSync(fd);
+      resolve(r);
+    };
+    child.on("error", (e) => {
+      try {
+        writeSync(fd, `\n[jills] failed to start ${o.cmd}: ${e.message}\n`);
+      } catch {
+        /* ignore */
+      }
+      finish({ exitCode: 127, timedOut, aborted });
+    });
+    child.on("exit", (code, sig) => finish({ exitCode: code, timedOut, aborted, signal: sig ?? undefined }));
+  });
+}
+
+/** Runs `run:` steps with bash -c in the step's workspace. */
+const commandRunner: RunnerPlugin = {
+  slot: "runner",
+  apiVersion: 1,
+  name: "command",
+  canRun: (step) => step.run !== undefined,
+  describe: (ctx) => `bash -c ${JSON.stringify(ctx.text)}  (cwd ${ctx.cwd})`,
+  run: (ctx) => spawnLogged({ cmd: "bash", args: ["-c", ctx.text], cwd: ctx.cwd, logPath: ctx.logPath, env: ctx.env, timeoutMs: ctx.timeoutMs, signal: ctx.signal }),
+};
+export default commandRunner;
