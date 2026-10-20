@@ -198,12 +198,13 @@ pnpm dsh --profile jills --host 127.0.0.1 --port 0 --no-open
 
 ## 6. Optional: run backends
 
-Purpose: store runs somewhere other than the default JSON files.
+Purpose: store runs somewhere other than the default JSON files (storage backend), or
+let Temporal drive runs so they resume after a crash (executor). The two combine.
 
-| Plug-in | Status |
-|---|---|
-| SQLite storage, `github.com/aidanrausch4231/jills-run-sqlite` | available; needs Node >= 22.13 and a Jills version with the backend plug-in slot |
-| Temporal executor, `github.com/aidanrausch4231/jills-run-temporal` | coming; no install steps yet |
+| Plug-in | Slot | Needs |
+|---|---|---|
+| SQLite storage, `github.com/aidanrausch4231/jills-run-sqlite` | `backend` | Node >= 22.13 and a Jills version with the backend plug-in slot |
+| Temporal executor, `github.com/aidanrausch4231/jills-run-temporal` | `executor` | a Jills version with the executor slot and `jills engine`, a Temporal server, and a running worker |
 
 SQLite:
 
@@ -224,6 +225,55 @@ backend: sqlite
 
 Run `jills check`. If it says `unknown plug-in slot "backend"`, this Jills build has no backend
 slot yet: remove both lines and tell the user. Existing JSON runs are not migrated.
+
+Temporal (each run becomes a Temporal workflow; after a crash Temporal retries and Jills
+resumes the same run, skipping steps that already finished):
+
+1. A Temporal server. For a single machine, the Temporal CLI's dev server is enough. If
+   `temporal --version` fails, point the user to the official install instructions at
+   https://docs.temporal.io/cli and let them install it; do not pipe an install script
+   into a shell for them. The default address is `localhost:7233`; only use a remote or
+   cloud address if the user gives one.
+2. Build the plug-in. It runs from its own folder and needs its `node_modules`:
+
+   ```bash
+   git clone https://github.com/aidanrausch4231/jills-run-temporal /path/to/jills-run-temporal
+   cd /path/to/jills-run-temporal
+   npm install && npm run build
+   ```
+
+3. Two long-running processes are needed. Ask the user where to keep them, such as two
+   terminals, tmux, or a user service they set up themselves. Do not install a service
+   for them.
+
+   ```bash
+   temporal server start-dev                       # terminal 1 (dev server)
+   node /path/to/jills-run-temporal/dist/worker.js # terminal 2 (worker)
+   ```
+
+   The worker passes its whole environment to Jill steps, so start it with only the
+   variables those steps need.
+4. Add to `~/.jills/config.yml` (keep any `backend:` lines from above):
+
+   ```yaml
+   plugins:
+     - /path/to/jills-run-temporal/dist/index.js
+   executor: temporal
+   # Optional; these are the defaults. The worker takes matching flags:
+   # --address --namespace --task-queue
+   # temporal:
+   #   address: localhost:7233
+   #   namespace: default
+   #   task_queue: jills
+   #   max_attempts: 3
+   ```
+
+5. Run `jills check`. It probes the Temporal server. If it says `unknown plug-in slot
+   "executor"`, this Jills build has no executor slot yet: remove the two lines and tell
+   the user. If the server is unreachable, check that steps 1 and 3 are running.
+
+`jills start`, `jills status` and `jills stop` work as before; `jills stop <id>` also
+cancels the Temporal workflow.
 
 ## 7. Verify and report
 
