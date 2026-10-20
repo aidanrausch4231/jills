@@ -80,7 +80,7 @@ own logins). The key is never logged, written to Jills state or run records, or 
 or a network error → **no suggestion** and a short reason ("Jev unavailable: TYPESAFE_API_KEY not set", "... HTTP 429",
 "... timeout"). **Jev is required for suggestions: there is no keyword fallback.** The Claude Code mod and the Pi add-on show the
 reason once per session. `jills go <jill>`, `jills start` and the MCP `start_jill` tool still work without Jev. Core reads only
-`auto`, `jill_paths`, `jev.threshold`, `plugins` and `default_timeout`; every other key belongs to a
+`auto`, `jill_paths`, `jev.threshold`, `plugins`, `backend`, `executor` and `default_timeout`; every other key belongs to a
 plug-in (`agent_*`, `tiers`, `default_model` to the agent runner, the rest of `jev:` to the Jev matcher).
 
 ## JILL.md
@@ -288,6 +288,7 @@ jills never [--session id] [--jill name] [--repo p]
 jills auto on|off
 jills new <name>                            # copies examples/JILL.template.md
 jills mcp
+jills engine <run>                         # internal: executors run/resume the engine directly
 ```
 
 Exit codes: 0 ok / done / suggestion, 1 error or refusal, 2 usage, 3 no suggestion,
@@ -331,6 +332,19 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 // core keeps only declared inputs. chat() applies dismiss/quiet/on/never/started and reads "last".
 { slot: "suggest", suggest(input: { session; message; recent; repo? }, ctx: { jills; config; match }): Promise<Suggestion>; chat(session, change: ChatChange, config): LastSuggestion | undefined }
 ```
+
+The `backend` slot stores run records and heartbeats through synchronous `save`, `load`, `list`, `beat`, and `loadBeat` methods.
+Set `backend: <name>` in config to select one; unset uses built-in `json` (existing run files work unchanged).
+Optional `sweep(home, config)` runs once after plug-ins load (never signals processes); `check(config)` adds diagnostics.
+Logs remain plain files in `RunRecord.logDir`. The library's `status()` is now async so it can load configured ESM backends.
+
+The independent `executor` slot drives a whole run: set `executor: <name>` alongside its `plugins:` path.
+Its `execute(run, { config, cli, signal })` must await completion without writing the record; `check(config)` is optional.
+Unset keeps the in-process detached engine. Storage (`backend: json`, sqlite, etc.) is independent of execution.
+Executors invoke `node <cli> engine <id>`: queued runs start; running/stuck/failed runs resume only after their engine is gone.
+Resume keeps the run id, workspace/branch and completed steps' log outputs, restarting unfinished steps at round 1.
+A missing workspace, a live engine or a done run is refused. The detached supervisor keeps heartbeating across retries;
+`jills stop` aborts its executor signal. Unfinished steps can repeat side effects: make them retry-safe.
 
 Built-ins: matcher `jev` (the only default matcher; no fallback); runner `command` and `agent`; isolation `worktree`;
 check `exit-code` and `verdict`; suggest `default` (the anti-nag rules above). Example: [`examples/plugins/notify.ts`](examples/plugins/notify.ts) appends each

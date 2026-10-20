@@ -1,53 +1,25 @@
-import { existsSync, readFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_TIMEOUT, type JillsConfig } from "./config.js";
 import { ancestors, checkNesting, type JillDef, type StepDef } from "./jillfile.js";
 import type { PluginSet } from "./plugins/index.js";
-import type { IsolationPlugin, RunnerPlugin, Workspace } from "./plugins/types.js";
+import type { IsolationPlugin, Workspace } from "./plugins/types.js";
+import { nestedInputs, stepCommand, type Outputs, type Loop } from "./plugins/engine-command.js";
+import { readOutput, resumeSteps, savedWorkspace, savedStep, stepOutput } from "./plugins/resume.js";
+export { nestedInputs, stepCommand } from "./plugins/engine-command.js";
 import { bootId } from "./proc.js";
-import { heartbeatPath, loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
-import { renderShellTemplate, renderTemplate, type TemplateVars } from "./template.js";
-import { MAX_TIMER_MS, parseLimit, writeJsonAtomic } from "./util.js";
+import { loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
+import { MAX_TIMER_MS, parseLimit } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
-type Outputs = Record<string, { output: string }>;
 /** One Jill's graph inside a run: nested Jills get their own frame (own inputs and key prefix). */
 type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; prefix: string };
-/** A step's round (1-based) and, from round 2, the output tail of the step whose failure sent work back. */
-type Loop = { round: number; feedback: string };
 
-const OUTPUT_LIMIT = 8000;
-/** How often a runner writes its heartbeat file (never the run record). */
+/** How often a runner writes its heartbeat (never the run record). */
 export const HEARTBEAT_MS = 5_000;
 
-/**
- * One step's command, shared by real and dry runs: the runner that claims it,
- * the rendered text (run: commands get env references, never values), the
- * JILLS_* env and the step timeout.
- */
-type StepCtx = { config: JillsConfig; plugins: PluginSet; runId: string; key: string; cwd: string; copy?: number; steps: Outputs; loop?: Loop };
-export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string, string>, c: StepCtx) {
-  const runner: RunnerPlugin | undefined = c.plugins.runners.find((p) => p.canRun(step, c.config));
-  const vars = { inputs, task: inputs.task, copy: c.copy, run_id: c.runId, steps: c.steps, ...c.loop };
-  const shell = step.run !== undefined ? renderShellTemplate(step.run, vars) : undefined;
-  const text = shell ? shell.text : renderTemplate(step.task ?? "{{task}}", vars);
-  const env: Record<string, string> = { JILLS_HOME: c.config.home, JILLS_RUN_ID: c.runId, JILLS_STEP: c.key, JILLS_JILL: jill.name, JILLS_WORKSPACE: c.cwd };
-  if (c.copy !== undefined) env.JILLS_COPY = String(c.copy);
-  for (const [k, v] of Object.entries(inputs)) env[`JILLS_INPUT_${k.toUpperCase().replace(/[^A-Z0-9_]/g, "_")}`] = v;
-  return { runner, text, env: { ...env, ...shell?.env }, shellEnv: shell?.env ?? {}, timeoutMs: parseLimit(step.timeout) };
-}
-
-const readOutput = (path?: string) => (path && existsSync(path) ? readFileSync(path, "utf8").slice(-OUTPUT_LIMIT).trim() : "");
-
 const now = () => new Date().toISOString();
-
-/** A nested Jill's inputs: the step's `inputs:` rendered with the parent's vars (else the parent's inputs), then the child's defaults. */
-export function nestedInputs(step: StepDef, child: JillDef, vars: TemplateVars): Record<string, string> {
-  const out = step.inputs ? Object.fromEntries(Object.entries(step.inputs).map(([k, v]) => [k, renderTemplate(v, vars)])) : { ...vars.inputs };
-  for (const i of child.inputs) if (out[i.name] === undefined && i.default !== undefined) out[i.name] = i.default;
-  return out;
-}
 
 export interface EngineOpts {
   config: JillsConfig;
@@ -56,6 +28,7 @@ export interface EngineOpts {
   onEvent?: EventListener;
   /** Abort from outside (e.g. the runner got SIGTERM): kills running steps, run ends failed. */
   signal?: AbortSignal;
+  resume?: boolean;
 }
 
 /**
@@ -88,7 +61,7 @@ export class RunEngine {
   /** True once an observer wrote a terminal state on disk: then stop our steps and keep its record. */
   private isLost(): boolean {
     if (this.lost || TERMINAL.has(this.written)) return this.lost;
-    const disk = loadRecord(this.o.config.home, this.record.id);
+    const disk = loadRecord(this.o.config.home, this.record.id, this.o.plugins.backend);
     if (disk && TERMINAL.has(disk.state)) {
       this.lost = true;
       this.halt(disk.state as Outcome, `marked ${disk.state} by an observer: ${disk.error ?? ""}`);
@@ -98,7 +71,7 @@ export class RunEngine {
 
   private save(): void {
     if (this.isLost()) return;
-    saveRecord(this.o.config.home, this.record);
+    saveRecord(this.o.config.home, this.record, this.o.plugins.backend);
     this.written = this.record.state;
   }
 
@@ -125,11 +98,11 @@ export class RunEngine {
     for (const k of ["JILLS_BASE_REPO", "JILLS_BASE_BRANCH", "JILLS_RUN_BRANCH"]) delete process.env[k]; // only a merges: true step gets these
     const since = String(process.hrtime.bigint());
     const boot = bootId();
-    const beat = () => writeJsonAtomic(heartbeatPath(c.home, r.id), { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
+    const beat = () => this.o.plugins.backend.beat(c.home, r.id, { at: now(), mono: String(process.hrtime.bigint()), since, bootId: boot });
     beat();
-    // A beat writes only its own file; it then reads the record to notice an observer's stuck mark.
+    // A beat writes separately; it then reads the record to notice an observer's stuck mark.
     const heart = setInterval(() => (beat(), this.isLost()), HEARTBEAT_MS).unref();
-    this.emit("started", undefined, r.jill);
+    this.emit("started", undefined, this.o.resume ? `resumed (${Object.values(r.steps).filter((s) => s.state === "done").length} steps already done)` : r.jill);
     let totalTimer: NodeJS.Timeout | undefined;
     const ext = this.o.signal;
     const onStop = () => this.halt("failed", `runner stopped: ${String(ext?.reason ?? "aborted")}`);
@@ -151,8 +124,8 @@ export class RunEngine {
         const isoName = jill.box ?? (typeof jill.extra.isolation === "string" ? jill.extra.isolation : "worktree");
         this.isolation = this.o.plugins.isolation.get(isoName);
         if (!this.isolation) throw new Error(`no isolation plug-in "${isoName}"`);
-        ws = await this.isolation.prepare({ repo: r.repo, jill: jill.name, runId: r.id, config: c });
-      }
+        ws = savedWorkspace(r) ?? await this.isolation.prepare({ repo: r.repo, jill: jill.name, runId: r.id, config: c });
+      } else ws = savedWorkspace(r) ?? ws;
       Object.assign(r, { workspace: ws.dir, branch: ws.branch, base: ws.base, isolated: ws.isolated });
       this.save();
       this.finish(this.outcome ?? (await this.runGraph({ jill, ws, inputs: r.inputs, prefix: "" })));
@@ -165,7 +138,7 @@ export class RunEngine {
       ext?.removeEventListener("abort", onStop);
     }
     await Promise.all(this.hooks);
-    return this.lost ? (loadRecord(c.home, r.id) ?? r) : r;
+    return this.lost ? (loadRecord(c.home, r.id, this.o.plugins.backend) ?? r) : r;
   }
 
   private finish(outcome: Outcome): void {
@@ -182,6 +155,7 @@ export class RunEngine {
     const outputs: Outputs = {};
     const running = new Map<string, Promise<void>>();
     const [rounds, loops] = [new Map<string, number>(), new Map<string, number>()]; // starts per step; back-arrows taken per failing step
+    const reusable = this.o.resume ? resumeSteps(this.record, jill, f.prefix, state, outputs, rounds) : new Set<string>();
     let feedback = "";
     /** A back-arrow waiting for its stale steps to stop: the steps to rerun and whether stale writes hit the shared worktree. */
     let back: { steps: string[]; discard: boolean } | undefined;
@@ -197,7 +171,8 @@ export class RunEngine {
         const round = (rounds.get(s.name) ?? 0) + 1;
         rounds.set(s.name, round);
         const loop = { round, feedback: round > 1 ? feedback : "" };
-        const copies = Array.from({ length: s.copies }, (_, i) => this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop));
+        const copies = Array.from({ length: s.copies }, (_, i) =>
+          this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop, reusable));
         const p = Promise.all(copies).then((res) => {
           running.delete(s.name);
           // stale (reset here, or inside a stale nested Jill): its result is dropped, never a failure with its own back-arrow
@@ -226,9 +201,12 @@ export class RunEngine {
     return this.outcome ?? ([...state.values()].every((v) => v === "done") ? "done" : "failed");
   }
 
-  private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined, useChild: boolean, loop: Loop): Promise<{ ok: boolean; output: string; key: string }> {
+  private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined,
+    useChild: boolean, loop: Loop, reusable: Set<string>): Promise<{ ok: boolean; output: string; key: string }> {
     const { jill, ws, inputs, prefix } = f;
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}${loop.round > 1 ? `@${loop.round}` : ""}`;
+    const saved = this.o.resume ? savedStep(this.record, key) : undefined;
+    if (loop.round === 1 && reusable.has(key) && saved) return { ok: true, output: stepOutput(this.record, saved), key: saved.key };
     const rec: StepRecord = { key, step: step.name, jill: jill.name, copy, kind: step.jill ? "jill" : step.agent ? "agent" : "run", state: "skipped" };
     this.record.steps[key] = rec;
     const ac = new AbortController();
@@ -247,16 +225,19 @@ export class RunEngine {
     };
     const iso = this.isolation;
     try {
-      const iws = useChild && this.isolation ? await this.isolation.child(ws, { key, runId: this.record.id, config: this.o.config }) : ws;
+      const previous = saved?.workspace && useChild ? savedWorkspace({ ...saved, repo: ws.repo ?? this.record.repo, isolated: ws.isolated }) : undefined;
+      const iws = previous ?? (useChild && this.isolation ? await this.isolation.child(ws, { key, runId: this.record.id, config: this.o.config }) : ws);
       Object.assign(rec, { workspace: iws.dir, branch: iws.branch });
       let [output, note] = ["", "done"];
       if (step.jill) {
         const child = this.o.lookup(step.jill)!;
         const childInputs = nestedInputs(step, child, { inputs, copy, run_id: this.record.id, steps: outputs, ...loop });
-        const out = await this.runGraph({ jill: child, ws: iws, inputs: childInputs, prefix: `${key}/` });
+        const childPrefix = `${loop.round === 1 && saved ? saved.key : key}/`;
+        const out = await this.runGraph({ jill: child, ws: iws, inputs: childInputs, prefix: childPrefix });
         if (out !== "done") return fail(out, `nested Jill ${child.name} ended ${out}`);
-        const inner = Object.entries(this.record.steps).filter(([k]) => k.startsWith(`${key}/`));
-        output = inner.map(([, s]) => readOutput(s.log)).filter(Boolean).slice(-1).join("");
+        const inner = Object.values(this.record.steps).filter((s) => s.key.startsWith(childPrefix) && readOutput(s.log));
+        rec.log = inner.at(-1)?.log;
+        output = readOutput(rec.log);
       } else {
         const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, copy, steps: outputs, loop });
         if (!cmd.runner) return fail("failed", "no runner plug-in can run this step");
@@ -272,6 +253,8 @@ export class RunEngine {
           Object.assign(cmd.env, { JILLS_BASE_REPO: iws.repo, JILLS_BASE_BRANCH: base, JILLS_RUN_BRANCH: iws.branch });
         }
         const logPath = join(this.record.logDir, `${key.replace(/[^A-Za-z0-9_.#@-]/g, "_")}.log`);
+        // Restarted steps must not expose partial output from a crashed attempt.
+        if (this.o.resume) rmSync(logPath, { force: true });
         rec.log = logPath;
         this.save();
         const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: AbortSignal.any([this.abort.signal, ac.signal]), env: cmd.env, config: this.o.config });

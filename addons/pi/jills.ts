@@ -150,15 +150,16 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
 
   function watch(core: JillsCore, rec: RunRecord): void {
     if (timers.has(rec.id)) return;
-    const tick = () => {
+    const tick = async () => {
       timers.delete(rec.id);
       if (!alive) return;
       let r: RunRecord | undefined;
       try {
-        r = core.status(rec.id, { home });
+        r = await core.status(rec.id, { home });
       } catch (e) {
         notify(`Jills: cannot read run ${rec.id}: ${(e as Error).message}`, "warning");
       }
+      if (!alive) return;
       if (r && core.TERMINAL.has(r.state)) {
         const line = core.resultLine(r);
         setStatus(timers.size ? `Jills: ${timers.size} running` : undefined);
@@ -312,10 +313,10 @@ export function createJillsExtension(pi: ExtensionAPI, opts: JillsPiOptions = {}
             return;
           case "status": {
             if (words[0]) {
-              const r = core.status(words[0], { home });
+              const r = await core.status(words[0], { home });
               notify(r ? core.resultLine(r) : `Jills: no run ${words[0]}`, r ? "info" : "warning");
             } else {
-              const rs = core.status(undefined, { home }).slice(0, 5);
+              const rs = (await core.status(undefined, { home })).slice(0, 5);
               notify(rs.length ? rs.map((r) => core.resultLine(r)).join("\n") : "Jills: no runs yet");
             }
             return;

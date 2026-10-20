@@ -97,7 +97,7 @@ const defaultSuggest: SuggestPlugin = {
     if (s.quiet) return quiet("quiet mode is on for this chat (/jills on to resume)");
     if (s.dismissed) return quiet("dismissed in this chat");
     s.runs = s.runs.filter((id) => {
-      const r = refreshRecord(home, id);
+      const r = refreshRecord(home, id, undefined, c.backend);
       return !!r && !TERMINAL.has(r.state);
     });
     if (s.runs.length) return quiet(`a Jill is running in this chat (${s.runs.join(", ")})`);

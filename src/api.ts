@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
+import { DEFAULT_TIMEOUT, jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
@@ -10,7 +10,7 @@ import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
 import { listRecords, loadHeartbeat, loadRecord, markTerminal, refreshRecord, resultLine, runLogDir, saveRecord, TERMINAL, type RunRecord } from "./runs.js";
-import { newId, sleep, writeFileAtomic } from "./util.js";
+import { newId, parseLimit, sleep, writeFileAtomic } from "./util.js";
 
 /** `home`: Jills home; defaults to $JILLS_HOME or ~/.jills. */
 export type BaseOpts = { home?: string };
@@ -19,6 +19,8 @@ type Ctx = { config: JillsConfig; plugins: PluginSet; jills: Map<string, JillDef
 
 const configOf = (o: BaseOpts) => loadConfig(o.home ?? jillsHome());
 const homeOf = (o: BaseOpts) => configOf(o).home;
+const storage = async (o: BaseOpts) => ({ home: homeOf(o), backend: (await loadPlugins(configOf(o), true)).backend });
+export { executeRun } from "./plugins/execute-run.js";
 
 async function context(o: BaseOpts = {}): Promise<Ctx> {
   const config = configOf(o);
@@ -78,7 +80,7 @@ export async function suggest(o: SuggestOpts): Promise<Suggestion> {
   const merges = (j: JillDef | undefined, seen = new Set<string>()): boolean => !!j && j.steps.some((s) => s.merges || (!!s.jill && !seen.has(s.jill) && merges(c.lookup(s.jill), seen.add(s.jill))));
   const jills = [...c.jills.values()].map((j) => ({ ...summarize(j), worktree: j.worktree, merges: merges(j) }));
   const input = { session: o.session, message: o.message, recent: (o.recent ?? []).slice(-3), repo: await resolveRepo(o.repo, o.cwd) };
-  const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, match });
+  const s = await c.plugins.suggest.suggest(input, { jills, config: c.config, backend: c.plugins.backend, match });
   return s.jill && s.inputs ? { ...s, inputs: declaredInputs(c.lookup(s.jill), s.inputs) } : s;
 }
 
@@ -111,8 +113,10 @@ async function prepareRun(name: string, o: StartOpts): Promise<{ c: Ctx; record:
   const id = newId();
   const logDir = runLogDir(c.config.home, id);
   const record: RunRecord = { version: 1, id, jill: j.name, jillPath: j.path, inputs, state: "queued", created: new Date().toISOString(), repo, session: o.session, logDir, steps: {}, events: [] };
+  // Executors need the effective limit before the engine starts (same fallback and clamp).
+  record.timeLimitMs = [j.timeout, c.config.default_timeout, DEFAULT_TIMEOUT].map(parseLimit).find((ms) => ms !== undefined)!;
   mkdirSync(logDir, { recursive: true });
-  saveRecord(c.config.home, record);
+  saveRecord(c.config.home, record, c.plugins.backend);
   return { c, record };
 }
 
@@ -135,15 +139,6 @@ export async function start(jillName: string, o: StartOpts = {}): Promise<RunRec
   return record;
 }
 
-/** Execute a queued run in this process (used by the detached runner). */
-export async function executeRun(id: string, o: BaseOpts & { onEvent?: EventListener; signal?: AbortSignal } = {}): Promise<RunRecord> {
-  const c = await context(o);
-  const r = loadRecord(c.config.home, id);
-  if (!r) throw new Error(`no run ${id}`);
-  if (r.state !== "queued") throw new Error(`run ${id} is ${r.state}, not queued`);
-  return new RunEngine(r, { ...c, onEvent: o.onEvent, signal: o.signal }).execute();
-}
-
 /** Run a Jill in the foreground, in this process. Resolves with the final record. */
 export async function runNow(jillName: string, o: StartOpts & { onEvent?: EventListener } = {}): Promise<RunRecord> {
   const { c, record } = await prepareRun(jillName, o);
@@ -159,10 +154,10 @@ export interface WaitOpts extends BaseOpts {
 
 /** Block until a run is done/failed/stuck/needs-you (or timeoutMs passes); returns a one-line result. */
 export async function wait(id: string, o: WaitOpts = {}): Promise<{ record: RunRecord; timedOut: boolean; line: string }> {
-  const home = homeOf(o);
+  const { home, backend } = await storage(o);
   const t0 = Date.now();
   for (let seen = -1; ; await sleep(o.pollMs ?? 250)) {
-    const r = refreshRecord(home, id, o.staleMs);
+    const r = refreshRecord(home, id, o.staleMs, backend);
     if (!r) throw new Error(`no run ${id}`);
     if (r.events.length !== seen) o.onUpdate?.(r);
     seen = r.events.length;
@@ -172,12 +167,12 @@ export async function wait(id: string, o: WaitOpts = {}): Promise<{ record: RunR
 }
 
 /** One run's record, or the recent runs when no id is given. Never signals anything. */
-export function status(id: string, o?: BaseOpts): RunRecord | undefined;
-export function status(id?: undefined, o?: BaseOpts): RunRecord[];
-export function status(id?: string, o: BaseOpts = {}): RunRecord | RunRecord[] | undefined {
-  const home = homeOf(o);
-  if (id) return refreshRecord(home, id);
-  return listRecords(home).map((r) => (TERMINAL.has(r.state) ? r : (refreshRecord(home, r.id) ?? r)));
+export function status(id: string, o?: BaseOpts): Promise<RunRecord | undefined>;
+export function status(id?: undefined, o?: BaseOpts): Promise<RunRecord[]>;
+export async function status(id?: string, o: BaseOpts = {}): Promise<RunRecord | RunRecord[] | undefined> {
+  const { home, backend } = await storage(o);
+  if (id) return refreshRecord(home, id, undefined, backend);
+  return listRecords(home, backend).map((r) => (TERMINAL.has(r.state) ? r : (refreshRecord(home, r.id, undefined, backend) ?? r)));
 }
 
 /**
@@ -186,12 +181,12 @@ export function status(id?: string, o: BaseOpts = {}): RunRecord | RunRecord[] |
  * records its own outcome; otherwise the run is recorded as failed here.
  */
 export async function stop(id: string, o: BaseOpts & { graceMs?: number } = {}): Promise<{ record: RunRecord; pids: number[] }> {
-  const home = homeOf(o);
-  const r = loadRecord(home, id);
+  const { home, backend } = await storage(o);
+  const r = loadRecord(home, id, backend);
   if (!r) throw new Error(`no run ${id}`);
-  const pids = await stopTagged(id, loadHeartbeat(home, id)?.bootId, o.graceMs);
-  const after = loadRecord(home, id) ?? r;
-  return { record: TERMINAL.has(after.state) ? after : (markTerminal(home, after, "failed", "stopped by jills stop") ?? after), pids };
+  const pids = await stopTagged(id, loadHeartbeat(home, id, backend)?.bootId, o.graceMs);
+  const after = loadRecord(home, id, backend) ?? r;
+  return { record: TERMINAL.has(after.state) ? after : (markTerminal(home, after, "failed", "stopped by jills stop", undefined, backend) ?? after), pids };
 }
 
 /**
@@ -245,9 +240,10 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
   if (c instanceof Error) return { errors: [c.message], warnings, jills: [] };
   const scan = scanJills(c.config.jill_paths);
   const errors = [...scan.errors];
+  warnings.push(...c.plugins.warnings);
   for (const [n, paths] of scan.duplicates) warnings.push(`Jill "${n}" found more than once; using ${paths[0]} (also: ${paths.slice(1).join(", ")})`);
   for (const p of c.config.jill_paths) if (!existsSync(p)) warnings.push(`jill path ${p} does not exist`);
-  for (const r of c.plugins.runners) {
+  for (const r of [...c.plugins.runners, c.plugins.backend, ...c.plugins.executor ? [c.plugins.executor] : []]) {
     const found = r.check?.(c.config);
     errors.push(...(found?.errors ?? []));
     warnings.push(...(found?.warnings ?? []));

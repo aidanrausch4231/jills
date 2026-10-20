@@ -35,8 +35,8 @@ export function createMcpServer(o: BaseOpts = {}): McpServer {
       "Status of one run (by id) or of recent runs.",
       { run: z.string().optional() },
       async (a) => {
-        if (!a.run) return status(undefined, o).slice(0, 20).map(resultLine).join("\n") || "no runs";
-        const r = status(a.run, o);
+        if (!a.run) return (await status(undefined, o)).slice(0, 20).map(resultLine).join("\n") || "no runs";
+        const r = await status(a.run, o);
         if (!r) throw new Error(`no run ${a.run}`);
         return json({ line: resultLine(r), state: r.state, steps: Object.values(r.steps).map((s) => ({ key: s.key, state: s.state, reason: s.reason, log: s.log })) });
       },

@@ -210,7 +210,7 @@ test("a runner killed with SIGKILL: status marks it stuck without signaling; sto
   const { id, runnerPid, childPid } = await startLong(home, ws);
   process.kill(runnerPid, "SIGKILL");
   await until(() => !pidAlive(runnerPid), 10_000, "runner to die");
-  const r = status(id, { home })!;
+  const r = (await status(id, { home }))!;
   assert.equal(r.state, "stuck");
   assert.equal(r.steps.long!.state, "stuck");
   assert.match(r.error!, /runner process is gone.*jills stop/);

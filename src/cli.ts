@@ -108,11 +108,11 @@ const COMMANDS: Record<string, Command> = {
   }],
   status: ["status [run] [--json]                  never signals anything; a hung or dead runner shows as stuck", async (rest, f, out) => {
     if (!rest[0]) {
-      const all = status();
+      const all = await status();
       out(all, () => (all.length ? all.slice(0, 20).map(resultLine).join("\n") : "no runs"));
       return EXIT.ok;
     }
-    const r = status(rest[0]);
+    const r = await status(rest[0]);
     if (!r) console.error(`no run ${rest[0]}`);
     else if (f.json) out(r, () => "");
     else printRecord(r);
@@ -140,6 +140,7 @@ const COMMANDS: Record<string, Command> = {
     console.log(v === "on" || v === "off" ? `auto ${v}` : `auto is ${loadConfig().auto ? "on" : "off"}`);
     return v === undefined || v === "on" || v === "off" ? EXIT.ok : EXIT.usage;
   }],
+  engine: ["engine <run>                           internal: run/resume an engine, bypassing the executor", async (rest) => runner(need(rest[0], "<run>"), true)],
   new: ["new <name>                             scaffold a JILL.md", async (rest) => print(newJill(need(rest[0], "<name>")))],
   mcp: ["mcp                                    MCP server on stdio", async () => (await (await import("../addons/mcp/mcp.js")).serveStdio(), -1)], // -1: keep running
 };
@@ -158,7 +159,7 @@ Env: JILLS_HOME (default ~/.jills).`;
  * stop signal it aborts the run, which stops every running group (SIGTERM, then
  * SIGKILL), saves the record as failed and only then exits.
  */
-async function runner(id: string): Promise<number> {
+async function runner(id: string, engine = false): Promise<number> {
   const ac = new AbortController();
   const onSignal = (sig: NodeJS.Signals) => {
     if (ac.signal.aborted) return;
@@ -168,7 +169,7 @@ async function runner(id: string): Promise<number> {
   const sigs = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
   for (const s of sigs) process.on(s, onSignal);
   try {
-    return stateExit((await executeRun(id, { signal: ac.signal })).state);
+    return stateExit((await executeRun(id, { signal: ac.signal, engine })).state);
   } finally {
     for (const s of sigs) process.off(s, onSignal);
   }

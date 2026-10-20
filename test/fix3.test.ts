@@ -82,7 +82,7 @@ test("observer marks a hung runner stuck without signaling it or its steps", asy
     heartbeat: { at: new Date().toISOString(), mono: mono(60_000), since: mono(120_000), bootId: bootId() },
     steps: { a: { key: "a", step: "a", jill: "x", kind: "run", state: "running" } },
   });
-  const r = status("hung-obs", { home })!;
+  const r = (await status("hung-obs", { home }))!;
   assert.equal(r.state, "stuck");
   assert.match(r.error!, /stopped beating.*jills stop hung-obs/);
   assert.equal(r.steps.a!.state, "stuck");
@@ -91,10 +91,10 @@ test("observer marks a hung runner stuck without signaling it or its steps", asy
   assert.equal(pidAlive(step.pid!), true, "observer never signals a step");
 });
 
-test("a runner whose pid is gone is stuck at once (one-shot status, no deadline needed)", () => {
+test("a runner whose pid is gone is stuck at once (one-shot status, no deadline needed)", async () => {
   const home = tmpHome();
   record(home, "gone-1", { pid: 999_999_99, deadline: new Date(Date.now() + 3_600_000).toISOString() });
-  const r = status("gone-1", { home })!;
+  const r = (await status("gone-1", { home }))!;
   assert.equal(r.state, "stuck");
   assert.match(r.error!, /runner process is gone/);
 });
@@ -103,7 +103,7 @@ test("a record from another boot is stuck, and stop signals nothing for it", asy
   const home = tmpHome();
   const t = tagged("boot-1");
   record(home, "boot-1", { pid: t.pid, heartbeat: { at: new Date().toISOString(), mono: mono(), since: mono(), bootId: "not-this-boot" } });
-  assert.equal(status("boot-1", { home })!.state, "stuck");
+  assert.equal((await status("boot-1", { home }))!.state, "stuck");
   const s = await stop("boot-1", { home, graceMs: 200 });
   assert.deepEqual(s.pids, []);
   assert.equal(pidAlive(t.pid!), true);

@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import { bootId, signal } from "./proc.js";
-import { readJson, writeJsonAtomic } from "./util.js";
+import jsonBackend from "./plugins/backend-json.js";
+import type { BackendPlugin } from "./plugins/types.js";
+export { runsDir, recordPath, runLogDir, heartbeatPath } from "./plugins/backend-json.js";
 
 export type RunState = "queued" | "running" | "done" | "failed" | "stuck" | "needs-you";
 export type StepState = "pending" | "running" | "done" | "failed" | "stuck" | "needs-you" | "skipped";
@@ -30,8 +30,8 @@ export interface StepRecord {
 export type RunEvent = { at: string; type: "started" | "step-started" | "step-done" | "finished" | "failed" | "stuck" | "needs-you"; step?: string; note?: string };
 
 /**
- * Written by the runner every few seconds to its own file, which no observer
- * writes. mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot).
+ * Written by the runner every few seconds, separately from the run record.
+ * mono/since are process.hrtime.bigint() (ns, one clock for every process on a boot).
  */
 export type Heartbeat = { at: string; mono: string; since: string; bootId?: string };
 
@@ -54,6 +54,9 @@ export interface RunRecord {
   session?: string;
   /** The runner process (it has JILLS_RUN_ID=<id> in its env when started detached). */
   pid?: number;
+  /** Detached executor supervisor; its heartbeat spans engine retries. */
+  executorPid?: number;
+  executorBootId?: string;
   logDir: string;
   steps: Record<string, StepRecord>;
   events: RunEvent[];
@@ -66,27 +69,11 @@ export interface RunRecord {
   deadline?: string;
 }
 
-export const runsDir = (home: string) => join(home, "runs");
-export const recordPath = (home: string, id: string) => join(runsDir(home), `${id}.json`);
-export const runLogDir = (home: string, id: string) => join(runsDir(home), id);
-export const heartbeatPath = (home: string, id: string) => join(runLogDir(home, id), "heartbeat.json");
-export const loadHeartbeat = (home: string, id: string) => readJson<Heartbeat>(heartbeatPath(home, id));
-
-export function saveRecord(home: string, r: RunRecord): void {
-  writeJsonAtomic(recordPath(home, r.id), r);
-}
-
-export function loadRecord(home: string, id: string): RunRecord | undefined {
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) return undefined;
-  return readJson<RunRecord>(recordPath(home, id));
-}
-
-export function listRecords(home: string): RunRecord[] {
-  const dir = runsDir(home);
-  if (!existsSync(dir)) return [];
-  const out = readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => readJson<RunRecord>(join(dir, f)));
-  return (out.filter(Boolean) as RunRecord[]).sort((a, b) => (a.created < b.created ? 1 : -1));
-}
+/** Storage helpers accept the selected backend; standalone callers default to JSON. */
+export const loadHeartbeat = (home: string, id: string, backend = jsonBackend) => backend.loadBeat(home, id);
+export const saveRecord = (home: string, r: RunRecord, backend = jsonBackend): void => backend.save(home, r);
+export const loadRecord = (home: string, id: string, backend = jsonBackend) => backend.load(home, id);
+export const listRecords = (home: string, backend = jsonBackend) => backend.list(home);
 
 const QUEUED_GRACE_MS = 60_000;
 /** A running record this long past its deadline may be stuck. */
@@ -117,14 +104,14 @@ export function stuckReason(r: RunRecord, hb: Heartbeat | undefined, staleMs = S
  * Write an observer's terminal mark: the run and its running steps end as
  * `state`. Re-reads first, so a record its runner finished meanwhile wins.
  */
-export function markTerminal(home: string, r: RunRecord, state: "failed" | "stuck", error: string, stepReason = error): RunRecord | undefined {
+export function markTerminal(home: string, r: RunRecord, state: "failed" | "stuck", error: string, stepReason = error, backend: BackendPlugin = jsonBackend): RunRecord | undefined {
   const at = new Date().toISOString();
   Object.assign(r, { state, error, finished: at });
   for (const s of Object.values(r.steps)) if (s.state === "running") Object.assign(s, { state, reason: stepReason, finished: at });
   r.events.push({ at, type: state, note: error });
-  const again = loadRecord(home, r.id); // lower the race with a finishing runner
+  const again = loadRecord(home, r.id, backend); // lower the race with a finishing runner
   if (!again || TERMINAL.has(again.state)) return again;
-  saveRecord(home, r);
+  saveRecord(home, r, backend);
   return r;
 }
 
@@ -133,12 +120,15 @@ export function markTerminal(home: string, r: RunRecord, state: "failed" | "stuc
  * anything: a queued run whose runner never started becomes failed; a running
  * one with a stuckReason becomes stuck (`jills stop <id>` stops its processes).
  */
-export function refreshRecord(home: string, id: string, staleMs?: number): RunRecord | undefined {
-  const r = loadRecord(home, id);
+export function refreshRecord(home: string, id: string, staleMs?: number, backend: BackendPlugin = jsonBackend): RunRecord | undefined {
+  const r = loadRecord(home, id, backend);
   if (!r || TERMINAL.has(r.state)) return r;
-  if (r.state === "queued") return Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS ? r : markTerminal(home, r, "failed", "runner never started");
-  const why = stuckReason(r, loadHeartbeat(home, id), staleMs);
-  return why ? markTerminal(home, r, "stuck", `${why}; run \`jills stop ${r.id}\` to stop its processes`, why) : r;
+  const hb = loadHeartbeat(home, id, backend);
+  if (r.executorPid && (!r.executorBootId || r.executorBootId === bootId()) && signal(r.executorPid, 0) && hb?.mono &&
+    process.hrtime.bigint() - BigInt(hb.mono) <= BigInt(staleMs ?? STALE_MS) * 1_000_000n) return r;
+  if (r.state === "queued") return Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS ? r : markTerminal(home, r, "failed", "runner never started", undefined, backend);
+  const why = stuckReason(r, hb, staleMs);
+  return why ? markTerminal(home, r, "stuck", `${why}; run \`jills stop ${r.id}\` to stop its processes`, why, backend) : r;
 }
 
 /** One-line result, e.g. for `jills wait`. */
