@@ -26,14 +26,25 @@ export function stepOutput(r: RunRecord, s: StepRecord): string {
     .map((inner) => readOutput(inner.log)).filter(Boolean).slice(-1).join("");
 }
 
-/** Seed each graph (including nested graphs); incomplete copies still restart at round 1. */
+/** Reuse successes only while all their dependencies are reusable, regardless of declaration order. */
 export function resumeSteps(r: RunRecord, jill: JillDef, prefix: string,
-  state: Map<string, "pending" | "running" | "done" | "failed">, outputs: Outputs, rounds: Map<string, number>): void {
-  for (const s of jill.steps) {
-    const copies = Array.from({ length: s.copies }, (_, i) => savedStep(r, `${prefix}${s.name}${s.copies > 1 ? `#${i + 1}` : ""}`));
-    if (!copies.every((c) => c?.state === "done")) continue;
-    state.set(s.name, "done");
-    rounds.set(s.name, 1); // a later back-arrow must run again, not reuse this success
-    outputs[s.name] = { output: copies.map((c) => stepOutput(r, c!)).filter(Boolean).join("\n\n---\n\n") };
+  state: Map<string, "pending" | "running" | "done" | "failed">, outputs: Outputs, rounds: Map<string, number>): Set<string> {
+  const reusable = new Set<string>();
+  const pending = new Set(jill.steps);
+  for (let progress = true; progress;) {
+    progress = false;
+    for (const s of pending) {
+      if (!s.needs.every((n) => state.get(n) === "done")) continue;
+      pending.delete(s);
+      progress = true;
+      const keys = Array.from({ length: s.copies }, (_, i) => `${prefix}${s.name}${s.copies > 1 ? `#${i + 1}` : ""}`);
+      const copies = keys.map((key) => savedStep(r, key));
+      copies.forEach((c, i) => { if (c?.state === "done") reusable.add(keys[i]!); });
+      if (!copies.every((c) => c?.state === "done")) continue;
+      state.set(s.name, "done");
+      rounds.set(s.name, 1); // a later back-arrow must run again, not reuse this success
+      outputs[s.name] = { output: copies.map((c) => stepOutput(r, c!)).filter(Boolean).join("\n\n---\n\n") };
+    }
   }
+  return reusable;
 }

@@ -180,6 +180,58 @@ steps:
   assert.equal(after.steps["review@2"]?.state, "done");
 });
 
+for (const copies of [1, 2]) {
+  test(`resume invalidates stale downstream successes after a back-arrow (${copies} copies)`, async () => {
+    const home = tmpHome();
+    writeJill(home, "flow", `worktree: false
+steps:
+  build: {run: 'sleep 0.1; echo build-FRESH'}
+  gen: {run: 'echo {{steps.build.output}}-gen-FRESH', needs: [build], copies: ${copies}}
+  review:
+    run: 'echo {{steps.gen.output}}'
+    needs: [gen]
+    on_fail: {back_to: build, max_rounds: 3}`);
+    const r = queued(home);
+    r.state = "running";
+    r.pid = 99_999_999;
+    completed(r, "build", "build-OLD");
+    const genKeys = Array.from({ length: copies }, (_, i) => `gen${copies > 1 ? `#${i + 1}` : ""}`);
+    for (const key of genKeys) completed(r, key, "gen-OLD-STALE");
+    r.steps.review = { key: "review", step: "review", jill: "flow", kind: "run", state: "failed" };
+    r.steps["build@2"] = { key: "build@2", step: "build", jill: "flow", kind: "run", state: "running" };
+    json.save(home, r);
+    const after = await executeRun(r.id, { home, engine: true });
+    assert.equal(after.state, "done", after.error);
+    assert.deepEqual(after.events.filter((e) => e.type === "step-started").map((e) => e.step), ["build", ...genKeys, "review"]);
+    for (const key of genKeys) {
+      assert.ok(after.events.findIndex((e) => e.type === "step-done" && e.step === "build") <
+        after.events.findIndex((e) => e.type === "step-started" && e.step === key));
+      assert.ok(after.events.findIndex((e) => e.type === "step-done" && e.step === key) <
+        after.events.findIndex((e) => e.type === "step-started" && e.step === "review"));
+    }
+    const output = readFileSync(after.steps.review!.log!, "utf8");
+    assert.match(output, /build-FRESH-gen-FRESH/);
+    assert.doesNotMatch(output, /OLD|STALE/);
+  });
+}
+
+test("resume seeds reusable dependencies even when declared after their dependents", async () => {
+  const home = tmpHome();
+  writeJill(home, "flow", `worktree: false
+steps:
+  third: {run: 'echo {{steps.second.output}}', needs: [second]}
+  second: {run: 'exit 1', needs: [first]}
+  first: {run: 'exit 1'}`);
+  const r = queued(home);
+  completed(r, "first");
+  completed(r, "second", "reusable second");
+  json.save(home, r);
+  const after = await executeRun(r.id, { home, engine: true });
+  assert.equal(after.state, "done", after.error);
+  assert.deepEqual(after.events.filter((e) => e.type === "step-started").map((e) => e.step), ["third"]);
+  assert.equal(readFileSync(after.steps.third!.log!, "utf8").trim(), "reusable second");
+});
+
 test("executor selection validates execute/check and reports missing names at check/start", async () => {
   const home = tmpHome("executor: absent\n");
   assert.equal((await check({ home })).errors[0], 'no executor plug-in "absent"');

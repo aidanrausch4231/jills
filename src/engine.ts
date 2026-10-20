@@ -155,7 +155,7 @@ export class RunEngine {
     const outputs: Outputs = {};
     const running = new Map<string, Promise<void>>();
     const [rounds, loops] = [new Map<string, number>(), new Map<string, number>()]; // starts per step; back-arrows taken per failing step
-    if (this.o.resume) resumeSteps(this.record, jill, f.prefix, state, outputs, rounds);
+    const reusable = this.o.resume ? resumeSteps(this.record, jill, f.prefix, state, outputs, rounds) : new Set<string>();
     let feedback = "";
     /** A back-arrow waiting for its stale steps to stop: the steps to rerun and whether stale writes hit the shared worktree. */
     let back: { steps: string[]; discard: boolean } | undefined;
@@ -171,7 +171,8 @@ export class RunEngine {
         const round = (rounds.get(s.name) ?? 0) + 1;
         rounds.set(s.name, round);
         const loop = { round, feedback: round > 1 ? feedback : "" };
-        const copies = Array.from({ length: s.copies }, (_, i) => this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop));
+        const copies = Array.from({ length: s.copies }, (_, i) =>
+          this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop, reusable));
         const p = Promise.all(copies).then((res) => {
           running.delete(s.name);
           // stale (reset here, or inside a stale nested Jill): its result is dropped, never a failure with its own back-arrow
@@ -200,11 +201,12 @@ export class RunEngine {
     return this.outcome ?? ([...state.values()].every((v) => v === "done") ? "done" : "failed");
   }
 
-  private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined, useChild: boolean, loop: Loop): Promise<{ ok: boolean; output: string; key: string }> {
+  private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined,
+    useChild: boolean, loop: Loop, reusable: Set<string>): Promise<{ ok: boolean; output: string; key: string }> {
     const { jill, ws, inputs, prefix } = f;
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}${loop.round > 1 ? `@${loop.round}` : ""}`;
     const saved = this.o.resume ? savedStep(this.record, key) : undefined;
-    if (loop.round === 1 && saved?.state === "done") return { ok: true, output: stepOutput(this.record, saved), key: saved.key };
+    if (loop.round === 1 && reusable.has(key) && saved) return { ok: true, output: stepOutput(this.record, saved), key: saved.key };
     const rec: StepRecord = { key, step: step.name, jill: jill.name, copy, kind: step.jill ? "jill" : step.agent ? "agent" : "run", state: "skipped" };
     this.record.steps[key] = rec;
     const ac = new AbortController();
