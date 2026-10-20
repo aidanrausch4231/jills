@@ -48,11 +48,12 @@ export function taggedPids(runId: string, pgrp?: number): number[] {
  * ones still tagged after the grace. Nothing else is ever signaled; a record
  * from another boot (bootId differs) signals nothing. Returns the pids signaled.
  */
-export async function stopTagged(runId: string, recordedBoot: string | undefined, graceMs = 3000): Promise<number[]> {
+export async function stopTagged(runId: string, recordedBoot: string | undefined, graceMs = 3000, preserve: number[] = []): Promise<number[]> {
   if (recordedBoot && recordedBoot !== bootId()) return [];
-  const hit = taggedPids(runId);
+  const targets = () => taggedPids(runId).filter((pid) => !preserve.includes(pid));
+  const hit = targets();
   for (const pid of hit) signal(pid, "SIGTERM");
-  for (let t = 0; t < graceMs && taggedPids(runId).length; t += 100) await sleep(100);
-  for (const pid of taggedPids(runId)) signal(pid, "SIGKILL"); // re-scanned: a recycled pid is not tagged
+  for (let t = 0; t < graceMs && targets().length; t += 100) await sleep(100);
+  for (const pid of targets()) signal(pid, "SIGKILL"); // re-scanned: a recycled pid is not tagged
   return hit;
 }

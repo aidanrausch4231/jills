@@ -9,7 +9,7 @@ import jevMatcher from "./matcher-jev.js";
 import worktreeIsolation from "./isolation-worktree.js";
 import defaultSuggest from "./suggest-default.js";
 import jsonBackend from "./backend-json.js";
-import { PLUGIN_API_VERSION, type AnyPlugin, type BackendPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
+import { PLUGIN_API_VERSION, type AnyPlugin, type BackendPlugin, type ExecutorPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
 
 export interface PluginSet {
   /** Tried in order; the first one that answers wins. */
@@ -25,6 +25,9 @@ export interface PluginSet {
   backends: Map<string, BackendPlugin>;
   /** Selected by config `backend`, default json. */
   backend: BackendPlugin;
+  executors: Map<string, ExecutorPlugin>;
+  executor?: ExecutorPlugin;
+  warnings: string[];
 }
 
 export function builtinPlugins(): PluginSet {
@@ -37,6 +40,8 @@ export function builtinPlugins(): PluginSet {
     suggest: defaultSuggest,
     backends: new Map([[jsonBackend.name, jsonBackend]]),
     backend: jsonBackend,
+    executors: new Map(),
+    warnings: [],
   };
 }
 
@@ -53,12 +58,13 @@ export function validatePlugin(p: unknown, source: string): AnyPlugin {
     hook: ["on"],
     suggest: ["suggest", "chat"],
     backend: ["save", "load", "list", "beat", "loadBeat"],
+    executor: ["execute"],
   };
   const slot = String(o.slot);
   if (!need[slot]) throw new Error(`${source}: unknown plug-in slot "${slot}" (v1 slots: ${Object.keys(need).join(", ")})`);
   for (const fn of need[slot]!) if (typeof o[fn] !== "function") throw new Error(`${source}: ${slot} plug-in is missing ${fn}()`);
-  if (slot === "backend") for (const fn of ["sweep", "check"]) {
-    if (o[fn] !== undefined && typeof o[fn] !== "function") throw new Error(`${source}: backend plug-in ${fn} must be a function`);
+  for (const fn of slot === "backend" ? ["sweep", "check"] : slot === "executor" ? ["check"] : []) {
+    if (o[fn] !== undefined && typeof o[fn] !== "function") throw new Error(`${source}: ${slot} plug-in ${fn} must be a function`);
   }
   return p as AnyPlugin;
 }
@@ -86,21 +92,35 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
     case "backend":
       set.backends.set(p.name, p);
       break;
+    case "executor":
+      set.executors.set(p.name, p);
+      break;
   }
 }
 
 /** Built-ins plus single-file plug-ins listed in config `plugins:` (those go first). */
-export async function loadPlugins(config: JillsConfig): Promise<PluginSet> {
+export async function loadPlugins(config: JillsConfig, storageOnly = false): Promise<PluginSet> {
   const set = builtinPlugins();
   for (const file of config.plugins) {
-    const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
-    addPlugin(set, validatePlugin(mod.default, file));
+    try {
+      const mod = (await import(pathToFileURL(file).href)) as { default?: { slot?: string } };
+      if (!storageOnly || mod.default?.slot === "backend") addPlugin(set, validatePlugin(mod.default, file));
+    } catch (e) {
+      if (!storageOnly) throw e;
+      console.warn(`jills: ignoring unrelated plug-in ${file}: ${(e as Error).message}`);
+    }
   }
   const name = config.raw.backend ?? "json";
   const backend = typeof name === "string" ? set.backends.get(name) : undefined;
   if (!backend) throw new Error(`no backend plug-in "${String(name)}"`);
   set.backend = backend;
-  backend.sweep?.(config.home, config);
+  try { backend.sweep?.(config.home, config); }
+  catch (e) { set.warnings.push(`backend ${backend.name} sweep failed: ${(e as Error).message}`); }
+  if (!storageOnly && config.raw.executor !== undefined) {
+    const name = config.raw.executor;
+    set.executor = typeof name === "string" ? set.executors.get(name) : undefined;
+    if (!set.executor) throw new Error(`no executor plug-in "${String(name)}"`);
+  }
   return set;
 }
 

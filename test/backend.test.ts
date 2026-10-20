@@ -81,6 +81,32 @@ test("backend selection validates required and optional methods and sweeps once 
   mod.default.check = findings;
 });
 
+test("a failing backend sweep warns but check still reaches backend diagnostics", async () => {
+  const { home, config, mod } = await memoryHome();
+  mod.default.sweep = () => { throw new Error("sweep unavailable"); };
+  mod.default.check = () => ({ errors: ["backend check reached"], warnings: [] });
+  const plugins = await loadPlugins(config);
+  assert.match(plugins.warnings.join("\n"), /memory sweep failed: sweep unavailable/);
+  const result = await check({ home });
+  assert.ok(result.errors.includes("backend check reached"));
+  assert.match(result.warnings.join("\n"), /sweep unavailable/);
+});
+
+test("status/wait/stop tolerate a broken unrelated plug-in for JSON and custom storage", async () => {
+  for (const custom of [false, true]) {
+    const home = custom ? (await memoryHome()).home : tmpHome();
+    const { backend } = await loadPlugins(loadConfig(home));
+    const r = record(home, "escape-hatch");
+    backend.save(home, r);
+    writeFileSync(join(home, "broken.mjs"), "export default { syntax: ; }");
+    writeFileSync(join(home, "config.yml"), `backend: ${custom ? "memory" : "json"}\nplugins: [./broken.mjs${custom ? ", ./memory.mjs" : ""}]\nexecutor: not-installed\njill_paths: [./not-needed]\n`);
+    assert.equal((await status(r.id, { home }))?.state, "queued");
+    assert.equal((await status(undefined, { home }))[0]?.id, r.id);
+    assert.equal((await wait(r.id, { home, timeoutMs: 0 })).timedOut, true);
+    assert.equal((await stop(r.id, { home })).record.state, "failed");
+  }
+});
+
 test("an unknown backend fails loading, check, and cold status instead of using JSON", async () => {
   const home = tmpHome("backend: missing\n");
   await assert.rejects(loadPlugins(loadConfig(home)), /no backend plug-in "missing"/);

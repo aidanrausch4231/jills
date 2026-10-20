@@ -54,6 +54,9 @@ export interface RunRecord {
   session?: string;
   /** The runner process (it has JILLS_RUN_ID=<id> in its env when started detached). */
   pid?: number;
+  /** Detached executor supervisor; its heartbeat spans engine retries. */
+  executorPid?: number;
+  executorBootId?: string;
   logDir: string;
   steps: Record<string, StepRecord>;
   events: RunEvent[];
@@ -120,8 +123,11 @@ export function markTerminal(home: string, r: RunRecord, state: "failed" | "stuc
 export function refreshRecord(home: string, id: string, staleMs?: number, backend: BackendPlugin = jsonBackend): RunRecord | undefined {
   const r = loadRecord(home, id, backend);
   if (!r || TERMINAL.has(r.state)) return r;
+  const hb = loadHeartbeat(home, id, backend);
+  if (r.executorPid && (!r.executorBootId || r.executorBootId === bootId()) && signal(r.executorPid, 0) && hb?.mono &&
+    process.hrtime.bigint() - BigInt(hb.mono) <= BigInt(staleMs ?? STALE_MS) * 1_000_000n) return r;
   if (r.state === "queued") return Date.now() - Date.parse(r.created) <= QUEUED_GRACE_MS ? r : markTerminal(home, r, "failed", "runner never started", undefined, backend);
-  const why = stuckReason(r, loadHeartbeat(home, id, backend), staleMs);
+  const why = stuckReason(r, hb, staleMs);
   return why ? markTerminal(home, r, "stuck", `${why}; run \`jills stop ${r.id}\` to stop its processes`, why, backend) : r;
 }
 
