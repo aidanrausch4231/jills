@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_TIMEOUT, type JillsConfig } from "./config.js";
 import { ancestors, checkNesting, type JillDef, type StepDef } from "./jillfile.js";
@@ -250,6 +251,8 @@ export class RunEngine {
           Object.assign(cmd.env, { JILLS_BASE_REPO: iws.repo, JILLS_BASE_BRANCH: base, JILLS_RUN_BRANCH: iws.branch });
         }
         const logPath = join(this.record.logDir, `${key.replace(/[^A-Za-z0-9_.#@-]/g, "_")}.log`);
+        // Restarted steps must not expose partial output from a crashed attempt.
+        if (this.o.resume) rmSync(logPath, { force: true });
         rec.log = logPath;
         this.save();
         const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: AbortSignal.any([this.abort.signal, ac.signal]), env: cmd.env, config: this.o.config });

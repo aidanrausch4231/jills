@@ -37,14 +37,16 @@ for (const state of ["queued", "running", "stuck", "failed"] as const) {
 steps:
   first: {run: 'echo must-not-run > unwanted'}
   second: {run: 'printf "%s" {{steps.first.output}} > second; echo {{round}}', needs: [first]}
-  third: {run: 'echo third > third', needs: [second]}`);
+  third: {run: 'printf "%s" {{steps.second.output}} > third', needs: [second]}`);
     const r = queued(home);
     r.state = state;
     if (state !== "queued") r.pid = 99_999_999;
     r.error = "old failure";
     r.workspace = r.repo;
     completed(r, "first", "safe $(touch injected); 'quoted'");
-    r.steps.second = { key: "second", step: "second", jill: "flow", kind: "run", state: "running" };
+    const partialLog = join(r.logDir, "second.log");
+    writeFileSync(partialLog, "stale-partial\n");
+    r.steps.second = { key: "second", step: "second", jill: "flow", kind: "run", state: "running", log: partialLog };
     r.steps.third = { key: "third", step: "third", jill: "flow", kind: "run", state: "skipped" };
     json.save(home, r);
     const after = await executeRun(r.id, { home, engine: true });
@@ -56,7 +58,8 @@ steps:
     assert.equal(existsSync(join(r.repo, "injected")), false);
     assert.equal(readFileSync(join(r.repo, "second"), "utf8"), "safe $(touch injected); 'quoted'");
     assert.equal(readFileSync(after.steps.second!.log!, "utf8").trim(), "1");
-    assert.ok(existsSync(join(r.repo, "third")));
+    assert.equal(readFileSync(join(r.repo, "third"), "utf8"), "1");
+    assert.equal(readFileSync(after.steps.first!.log!, "utf8"), "safe $(touch injected); 'quoted'\n");
     assert.ok(after.events.some((e) => e.type === "started" && e.note === "resumed (1 steps already done)"));
     assert.deepEqual(after.events.filter((e) => e.type === "step-started").map((e) => e.step), ["second", "third"]);
   });
@@ -194,8 +197,8 @@ test("executor retries a killed engine with the same id and without repeating do
   writeJill(home, "flow", `worktree: false
 steps:
   first: {run: 'echo first >> first-count; echo first-output'}
-  second: {run: 'echo $$ > second.pid; sleep 1; echo {{steps.first.output}} > second; echo second >> second-count', needs: [first]}
-  third: {run: 'echo third > third', needs: [second]}`);
+  second: {run: 'if test ! -f second.pid; then echo stale-partial; echo $$ > second.pid; sleep 10; fi; echo fresh; echo {{steps.first.output}} > second; echo second >> second-count', needs: [first]}
+  third: {run: 'printf "%s" {{steps.second.output}} > third', needs: [second]}`);
   const r = await start("flow", { home, cwd: repo });
   t.after(() => stop(r.id, { home, graceMs: 100 }));
   const after = await wait(r.id, { home, timeoutMs: 15_000, pollMs: 30 });
@@ -204,7 +207,9 @@ steps:
   assert.equal(readFileSync(join(repo, "first-count"), "utf8"), "first\n");
   assert.equal(readFileSync(join(repo, "second-count"), "utf8"), "second\n");
   assert.equal(readFileSync(join(repo, "second"), "utf8"), "first-output\n");
-  assert.ok(existsSync(join(repo, "third")));
+  assert.equal(readFileSync(after.record.steps.second!.log!, "utf8"), "fresh\n");
+  assert.equal(readFileSync(join(repo, "third"), "utf8"), "fresh");
+  assert.equal(readFileSync(after.record.steps.first!.log!, "utf8"), "first-output\n");
   assert.ok(after.record.events.some((e) => e.note === "resumed (1 steps already done)"));
 });
 
