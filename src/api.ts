@@ -282,7 +282,7 @@ function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, j
     }
     try {
       const ph = { runId: "<run-id>", cwd: "<workspace>", config: c.config };
-      const cmd = stepCommand(s, jill, inputs, { ...ph, plugins: c.plugins, key: s.name, copy: s.copies > 1 ? 1 : undefined, steps: {} });
+      const cmd = stepCommand(s, jill, inputs, { ...ph, plugins: c.plugins, box: root.box, key: s.name, copy: s.copies > 1 ? 1 : undefined, steps: {} });
       if (!cmd.runner) throw new Error("no runner plug-in can run this step");
       const desc = cmd.runner.describe({ ...ph, stepKey: s.name, step: s, jill, text: cmd.text, env: {} });
       const env = Object.entries(cmd.shellEnv).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
