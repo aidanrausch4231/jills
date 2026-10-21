@@ -39,6 +39,12 @@ export interface MatcherPlugin {
   match(input: MatchInput): Promise<MatchResult | undefined>;
 }
 // ---- runner ----
+export interface RunnerSelectContext {
+  /** The Jill that owns the step (the child Jill for a nested step). */
+  jill: JillDef;
+  /** The box the step's run actually uses; undefined means no box. Nested Jills share the outermost run's box. */
+  box?: string;
+}
 export interface StepRunContext {
   runId: string;
   stepKey: string;
@@ -58,7 +64,7 @@ export interface RunnerPlugin {
   slot: "runner";
   apiVersion: 1;
   name: string;
-  canRun(step: StepDef, config?: JillsConfig): boolean; // config is optional: older plug-ins read only the step
+  canRun(step: StepDef, config?: JillsConfig, ctx?: RunnerSelectContext): boolean; // optional arguments: older plug-ins read only the step
   /** Describe what would run, for dry runs and `jills check` (throw for a step it cannot run). */
   describe(ctx: Omit<StepRunContext, "signal" | "logPath">): string;
   run(ctx: StepRunContext): Promise<StepRunResult>;

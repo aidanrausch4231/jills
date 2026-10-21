@@ -14,7 +14,7 @@ import { MAX_TIMER_MS, parseLimit } from "./util.js";
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
 /** One Jill's graph inside a run: nested Jills get their own frame (own inputs and key prefix). */
-type Frame = { jill: JillDef; ws: Workspace; inputs: Record<string, string>; prefix: string };
+type Frame = { jill: JillDef; box?: string; ws: Workspace; inputs: Record<string, string>; prefix: string };
 
 /** How often a runner writes its heartbeat (never the run record). */
 export const HEARTBEAT_MS = 5_000;
@@ -128,7 +128,7 @@ export class RunEngine {
       } else ws = savedWorkspace(r) ?? ws;
       Object.assign(r, { workspace: ws.dir, branch: ws.branch, base: ws.base, isolated: ws.isolated });
       this.save();
-      this.finish(this.outcome ?? (await this.runGraph({ jill, ws, inputs: r.inputs, prefix: "" })));
+      this.finish(this.outcome ?? (await this.runGraph({ jill, box: jill.box, ws, inputs: r.inputs, prefix: "" })));
     } catch (e) {
       r.error ??= (e as Error).message;
       this.finish(this.outcome ?? "failed");
@@ -203,7 +203,7 @@ export class RunEngine {
 
   private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined,
     useChild: boolean, loop: Loop, reusable: Set<string>): Promise<{ ok: boolean; output: string; key: string }> {
-    const { jill, ws, inputs, prefix } = f;
+    const { jill, box, ws, inputs, prefix } = f;
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}${loop.round > 1 ? `@${loop.round}` : ""}`;
     const saved = this.o.resume ? savedStep(this.record, key) : undefined;
     if (loop.round === 1 && reusable.has(key) && saved) return { ok: true, output: stepOutput(this.record, saved), key: saved.key };
@@ -233,13 +233,13 @@ export class RunEngine {
         const child = this.o.lookup(step.jill)!;
         const childInputs = nestedInputs(step, child, { inputs, copy, run_id: this.record.id, steps: outputs, ...loop });
         const childPrefix = `${loop.round === 1 && saved ? saved.key : key}/`;
-        const out = await this.runGraph({ jill: child, ws: iws, inputs: childInputs, prefix: childPrefix });
+        const out = await this.runGraph({ jill: child, box, ws: iws, inputs: childInputs, prefix: childPrefix });
         if (out !== "done") return fail(out, `nested Jill ${child.name} ended ${out}`);
         const inner = Object.values(this.record.steps).filter((s) => s.key.startsWith(childPrefix) && readOutput(s.log));
         rec.log = inner.at(-1)?.log;
         output = readOutput(rec.log);
       } else {
-        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, copy, steps: outputs, loop });
+        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, box, copy, steps: outputs, loop });
         if (!cmd.runner) return fail("failed", "no runner plug-in can run this step");
         // merges: true — the isolation plug-in refuses a dirty or switched checkout, then judges the result; a bad result never loops.
         const base = this.record.base ?? "";

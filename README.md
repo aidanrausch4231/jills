@@ -320,8 +320,8 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 ```ts
 // matcher: tried in order (config plug-ins first); return undefined to let the next one answer.
 { slot: "matcher", match(input: { message; recent: Turn[]; jills: JillSummary[]; already: string[]; config }): Promise<MatchResult | undefined> }
-// runner: the first whose canRun(step) is true runs the step; describe() serves dry runs and `jills check`.
-{ slot: "runner", canRun(step): boolean; describe(ctx): string; run(ctx: StepRunContext): Promise<StepRunResult>; check?(config): { errors; warnings } }
+// runner: the first whose canRun(step, config, ctx) is true runs the step; describe() serves dry runs and `jills check`.
+{ slot: "runner", canRun(step, config?, ctx?: RunnerSelectContext): boolean; describe(ctx): string; run(ctx: StepRunContext): Promise<StepRunResult>; check?(config): { errors; warnings } }
 // isolation: picked by `box: <name>` (default "worktree"); child/mergeBack serve parallel writers.
 { slot: "isolation", prepare({ repo, jill, runId, config }): Promise<Workspace>; child(parent, { key, runId, config }); mergeBack(parent, child, msg): Promise<MergeResult>; commit(ws, msg); parallel?(jill, lookup): Set<string> /* steps that get a child workspace */; mergeStart?(ws, base); mergeCheck?(ws, base, start) /* merges: true */; retry?(ws, { discard }) /* before a back-arrow: drop stale writes */ }
 // check: named in a step's `checks: [...]` (exit-code, then verdict, always run first).
@@ -331,6 +331,17 @@ edit is needed. Core refuses an unknown `apiVersion` or slot. Plug-ins read thei
 // suggest: the chat policy around the matchers (the last one loaded wins). ctx.match asks the matchers;
 // core keeps only declared inputs. chat() applies dismiss/quiet/on/never/started and reads "last".
 { slot: "suggest", suggest(input: { session; message; recent; repo? }, ctx: { jills; config; match }): Promise<Suggestion>; chat(session, change: ChatChange, config): LastSuggestion | undefined }
+```
+
+Runner selection receives an optional third argument, `RunnerSelectContext`: `jill` owns the step,
+and `box` is the run's actual box (`undefined` means no box). Nested steps receive their child Jill
+and the outermost run's box, including in dry runs and `jills check`. Existing one-argument runners
+still work. To claim only OpenShell steps, a runner can use:
+
+```ts
+canRun(step, config, ctx) {
+  return ctx?.box === "openshell";
+}
 ```
 
 The `backend` slot stores run records and heartbeats through synchronous `save`, `load`, `list`, `beat`, and `loadBeat` methods.

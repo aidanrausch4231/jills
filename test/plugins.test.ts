@@ -7,7 +7,7 @@ import { loadConfig } from "../src/config.js";
 import { loadPlugins, validatePlugin } from "../src/plugins/index.js";
 import { tmp, tmpHome, writeJill } from "./helpers.js";
 
-test("single-file plug-ins load from config and go first; bad versions are refused", async () => {
+test("old-style one-argument runner plug-ins load and run unchanged; bad versions are refused", async () => {
   const dir = tmp();
   const file = join(dir, "echo-runner.js");
   writeFileSync(
@@ -18,6 +18,7 @@ test("single-file plug-ins load from config and go first; bad versions are refus
   const home = tmpHome(`plugins: [${file}]\n`);
   const set = await loadPlugins(loadConfig(home));
   assert.equal(set.runners[0]!.name, "upper");
+  assert.equal(set.runners[0]!.canRun.length, 1);
   assert.deepEqual(set.matchers.map((m) => m.name), ["jev"]);
   // a step with an unknown field + run: is picked up by the plug-in that claims it
   writeJill(home, "plug", "worktree: false\nsteps:\n  a: {run: 'exit 1', upper: shout}");
