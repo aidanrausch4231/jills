@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_TIMEOUT, jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, uncheckedWriters, type JillDef } from "./jillfile.js";
-import { loadPlugins, type PluginSet } from "./plugins/index.js";
+import { loadPlugins, stepChecks, type PluginSet } from "./plugins/index.js";
 import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
@@ -24,8 +24,9 @@ export { executeRun } from "./plugins/execute-run.js";
 
 async function context(o: BaseOpts = {}): Promise<Ctx> {
   const config = configOf(o);
-  const jills = scanJills(config.jill_paths).items;
-  return { config, plugins: await loadPlugins(config), jills, lookup: (n) => jills.get(n) };
+  const plugins = await loadPlugins(config);
+  const jills = scanJills(config.jill_paths, stepChecks(plugins)).items;
+  return { config, plugins, jills, lookup: (n) => jills.get(n) };
 }
 
 const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), required: j.inputs.filter((i) => i.required && i.default === undefined).map((i) => i.name) });
@@ -238,7 +239,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
   const warnings: string[] = [];
   const c = await context(o).catch((e: Error) => e);
   if (c instanceof Error) return { errors: [c.message], warnings, jills: [] };
-  const scan = scanJills(c.config.jill_paths);
+  const scan = scanJills(c.config.jill_paths, stepChecks(c.plugins));
   const errors = [...scan.errors];
   warnings.push(...c.plugins.warnings);
   for (const [n, paths] of scan.duplicates) warnings.push(`Jill "${n}" found more than once; using ${paths[0]} (also: ${paths.slice(1).join(", ")})`);

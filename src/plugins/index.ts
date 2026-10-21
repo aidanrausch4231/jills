@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import type { JillsConfig } from "../config.js";
+import type { StepDef } from "../jillfile.js";
 import agentRunner from "./runner-agent.js";
 import claudeRunner from "./runner-claude.js";
 import commandRunner from "./runner-command.js";
@@ -8,8 +9,9 @@ import verdictCheck from "./check-verdict.js";
 import jevMatcher from "./matcher-jev.js";
 import worktreeIsolation from "./isolation-worktree.js";
 import defaultSuggest from "./suggest-default.js";
+import foreachExpand from "./foreach.js";
 import jsonBackend from "./backend-json.js";
-import { PLUGIN_API_VERSION, type AnyPlugin, type BackendPlugin, type ExecutorPlugin, type CheckPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
+import { PLUGIN_API_VERSION, type AnyPlugin, type BackendPlugin, type Expansion, type ExecutorPlugin, type CheckPlugin, type ExpandPlugin, type HookPlugin, type IsolationPlugin, type MatcherPlugin, type RunnerPlugin, type SuggestPlugin } from "./types.js";
 
 export interface PluginSet {
   /** Tried in order; the first one that answers wins. */
@@ -27,6 +29,8 @@ export interface PluginSet {
   backend: BackendPlugin;
   executors: Map<string, ExecutorPlugin>;
   executor?: ExecutorPlugin;
+  /** Step expanders by name (built-in: foreach); a config plug-in with the same name replaces one. */
+  expanders: Map<string, ExpandPlugin>;
   warnings: string[];
 }
 
@@ -41,6 +45,7 @@ export function builtinPlugins(): PluginSet {
     backends: new Map([[jsonBackend.name, jsonBackend]]),
     backend: jsonBackend,
     executors: new Map(),
+    expanders: new Map([[foreachExpand.name, foreachExpand]]),
     warnings: [],
   };
 }
@@ -59,6 +64,7 @@ export function validatePlugin(p: unknown, source: string): AnyPlugin {
     suggest: ["suggest", "chat"],
     backend: ["save", "load", "list", "beat", "loadBeat"],
     executor: ["execute"],
+    expand: ["validate", "expand"],
   };
   const slot = String(o.slot);
   if (!need[slot]) throw new Error(`${source}: unknown plug-in slot "${slot}" (v1 slots: ${Object.keys(need).join(", ")})`);
@@ -95,6 +101,9 @@ export function addPlugin(set: PluginSet, p: AnyPlugin): void {
     case "executor":
       set.executors.set(p.name, p);
       break;
+    case "expand":
+      set.expanders.set(p.name, p);
+      break;
   }
 }
 
@@ -125,5 +134,13 @@ export async function loadPlugins(config: JillsConfig, storageOnly = false): Pro
   }
   return set;
 }
+
+/** Parse-time step checks from every expander, for parseJill / scanJills. */
+export const stepChecks = (set: PluginSet) => (s: StepDef, before: Set<string>): string[] => [...set.expanders.values()].flatMap((p) => p.validate(s, before));
+/** The first expander that claims the step (throws its reason when the step must fail). */
+export const expansionOf = (set: PluginSet, s: StepDef, outputs: Record<string, { output: string }>, config: JillsConfig): Expansion | undefined => {
+  for (const p of set.expanders.values()) { const e = p.expand(s, outputs, config); if (e) return e; }
+  return undefined;
+};
 
 export * from "./types.js";

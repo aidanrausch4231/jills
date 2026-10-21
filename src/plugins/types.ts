@@ -116,4 +116,17 @@ export interface HookPlugin {
   name: string;
   on(event: RunEvent, record: RunRecord, config: JillsConfig): void | Promise<void>;
 }
-export type AnyPlugin = MatcherPlugin | RunnerPlugin | IsolationPlugin | CheckPlugin | HookPlugin | SuggestPlugin | BackendPlugin | ExecutorPlugin;
+// ---- expand ----
+/** One step run as N instances: per-instance placeholders, how many at once, how to join and report results. */
+export type Expansion = { items: Record<string, string>[]; maxParallel: number; join(res: { ok: boolean; output: string }[]): string; failed(res: { ok: boolean }[]): string };
+/** Turns one step into N instances at run time (built-in: foreach). Core runs the instances. */
+export interface ExpandPlugin {
+  slot: "expand";
+  apiVersion: 1;
+  name: string;
+  /** Parse-time errors for a step; `before` = the steps it needs, directly or not. */
+  validate(step: StepDef, before: Set<string>): string[];
+  /** undefined = not this plug-in's step; [] items = skip the step; throw = the step fails with that reason. */
+  expand(step: StepDef, outputs: Record<string, { output: string }>, config: JillsConfig): Expansion | undefined;
+}
+export type AnyPlugin = MatcherPlugin | RunnerPlugin | IsolationPlugin | CheckPlugin | HookPlugin | SuggestPlugin | BackendPlugin | ExecutorPlugin | ExpandPlugin;

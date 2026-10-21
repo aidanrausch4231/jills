@@ -2,14 +2,14 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_TIMEOUT, type JillsConfig } from "./config.js";
 import { ancestors, checkNesting, type JillDef, type StepDef } from "./jillfile.js";
-import type { PluginSet } from "./plugins/index.js";
-import type { IsolationPlugin, Workspace } from "./plugins/types.js";
+import { expansionOf, type PluginSet } from "./plugins/index.js";
+import type { Expansion, IsolationPlugin, Workspace } from "./plugins/types.js";
 import { nestedInputs, stepCommand, type Outputs, type Loop } from "./plugins/engine-command.js";
 import { readOutput, resumeSteps, savedWorkspace, savedStep, stepOutput } from "./plugins/resume.js";
 export { nestedInputs, stepCommand } from "./plugins/engine-command.js";
 import { bootId } from "./proc.js";
 import { loadRecord, saveRecord, TERMINAL, type RunEvent, type RunRecord, type RunState, type StepRecord } from "./runs.js";
-import { MAX_TIMER_MS, parseLimit } from "./util.js";
+import { MAX_TIMER_MS, parseLimit, pool } from "./util.js";
 
 export type Outcome = "done" | "failed" | "stuck" | "needs-you";
 export type EventListener = (e: RunEvent, r: RunRecord) => void;
@@ -171,22 +171,30 @@ export class RunEngine {
         const round = (rounds.get(s.name) ?? 0) + 1;
         rounds.set(s.name, round);
         const loop = { round, feedback: round > 1 ? feedback : "" };
-        const copies = Array.from({ length: s.copies }, (_, i) =>
-          this.runInstance(f, outputs, s, s.copies > 1 ? i + 1 : undefined, parallel.has(s.name), loop, reusable));
-        const p = Promise.all(copies).then((res) => {
+        // An expand plug-in (built-in: foreach) may turn the step into N instances with their own placeholders.
+        let exp: Expansion | undefined, refused: string | undefined;
+        try { exp = expansionOf(this.o.plugins, s, outputs, this.o.config); } catch (e) { refused = (e as Error).message; }
+        const one = (i: number | undefined, named?: Record<string, string>, refuse?: string) => this.runInstance(f, outputs, s, i, parallel.has(s.name), loop, reusable, named, refuse);
+        const copies = refused !== undefined ? Promise.all([one(1, {}, refused)]) // the step fails as one recorded instance
+          : exp ? pool(exp.items.length, exp.maxParallel, (i) => one(i + 1, exp!.items[i]))
+          : Promise.all(Array.from({ length: s.copies }, (_, i) => one(s.copies > 1 ? i + 1 : undefined)));
+        if (exp && !exp.items.length) this.emit("step-done", f.prefix + s.name, "skipped: no instances to run");
+        const p = copies.then((res) => {
           running.delete(s.name);
           // stale (reset here, or inside a stale nested Jill): its result is dropped, never a failure with its own back-arrow
           if (back?.steps.includes(s.name) || this.isStale(f.prefix + s.name))
             return void res.forEach((x) => Object.assign(this.record.steps[x.key]!, { state: "skipped", reason: "stale: a back-arrow reran an earlier step" }));
-          outputs[s.name] = { output: res.map((x) => x.output).filter(Boolean).join("\n\n---\n\n") };
-          const bad = res.find((x) => !x.ok);
+          outputs[s.name] = { output: exp ? exp.join(res) : refused ?? res.map((x) => x.output).filter(Boolean).join("\n\n---\n\n") };
+          const bad = res.find((x) => !x.ok), many = exp !== undefined || refused !== undefined;
           state.set(s.name, bad ? "failed" : "done");
+          // Instances never halt the run themselves (engine: fail); the step does, after all of them ran.
+          if (many && bad && !s.onFail && !this.outcome) this.halt("failed", `step ${f.prefix}${s.name}: ${refused ?? exp!.failed(res)}`);
           // Back-arrow: only a real failure (non-zero exit, failed check) gets here without a halt.
           if (!bad || !s.onFail || this.outcome) return;
           const n = (loops.get(s.name) ?? 0) + 1;
           if (n >= s.onFail.maxRounds) return this.halt("needs-you", `${f.prefix}${s.name} failed ${n} rounds`);
           loops.set(s.name, n);
-          feedback = bad.output;
+          feedback = many ? outputs[s.name]!.output : bad.output;
           const steps = jill.steps.filter((x) => x.name === s.onFail!.backTo || ancestors(jill.steps, x.name).has(s.onFail!.backTo)).map((x) => x.name);
           const busy = steps.filter((x) => running.has(x));
           back = { steps: [...new Set([...(back?.steps ?? []), ...steps])], discard: !!back?.discard || busy.some((x) => !parallel.has(x)) };
@@ -202,7 +210,7 @@ export class RunEngine {
   }
 
   private async runInstance(f: Frame, outputs: Outputs, step: StepDef, copy: number | undefined,
-    useChild: boolean, loop: Loop, reusable: Set<string>): Promise<{ ok: boolean; output: string; key: string }> {
+    useChild: boolean, loop: Loop, reusable: Set<string>, named?: Record<string, string>, refuse?: string): Promise<{ ok: boolean; output: string; key: string }> {
     const { jill, box, ws, inputs, prefix } = f;
     const key = `${prefix}${step.name}${copy !== undefined ? `#${copy}` : ""}${loop.round > 1 ? `@${loop.round}` : ""}`;
     const saved = this.o.resume ? savedStep(this.record, key) : undefined;
@@ -218,12 +226,13 @@ export class RunEngine {
     const fail = (state: "failed" | "stuck" | "needs-you" | "skipped", reason: string, halt = true) => {
       if (this.isStale(key)) [state, reason] = ["skipped", "stale: a back-arrow reran an earlier step"];
       Object.assign(rec, { state, reason, finished: now() });
-      halt &&= state !== "skipped"; // a stale step's result is dropped, never stops the run
+      halt &&= state !== "skipped" && !(named && (state === "failed" || state === "stuck")); // stale: dropped; an expanded instance: the step decides
       if (halt) this.halt(state as Outcome, `step ${key}: ${reason}`);
       this.emit("step-done", key, `${state}: ${reason}`);
       return { ok: false, output: halt ? "" : readOutput(rec.log), key };
     };
     const iso = this.isolation;
+    if (refuse !== undefined) return fail("failed", refuse);
     try {
       const previous = saved?.workspace && useChild ? savedWorkspace({ ...saved, repo: ws.repo ?? this.record.repo, isolated: ws.isolated }) : undefined;
       const iws = previous ?? (useChild && this.isolation ? await this.isolation.child(ws, { key, runId: this.record.id, config: this.o.config }) : ws);
@@ -239,7 +248,7 @@ export class RunEngine {
         rec.log = inner.at(-1)?.log;
         output = readOutput(rec.log);
       } else {
-        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, box, copy, steps: outputs, loop });
+        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, box, copy, steps: outputs, loop, named });
         if (!cmd.runner) return fail("failed", "no runner plug-in can run this step");
         // merges: true — the isolation plug-in refuses a dirty or switched checkout, then judges the result; a bad result never loops.
         const base = this.record.base ?? "";

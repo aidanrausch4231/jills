@@ -71,7 +71,7 @@ function parallelWriters(jill: JillDef, lookup: (n: string) => JillDef | undefin
   const writers = jill.steps.filter((s) => writes(s, new Set()));
   const out = new Set<string>();
   for (const w of writers) {
-    if (w.copies > 1) out.add(w.name);
+    if (w.copies > 1 || w.extra.foreach !== undefined) out.add(w.name);
     for (const o of writers) if (o !== w && !ancestors(jill.steps, w.name).has(o.name) && !ancestors(jill.steps, o.name).has(w.name)) out.add(w.name);
   }
   return out;

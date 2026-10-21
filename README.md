@@ -109,8 +109,37 @@ steps:
 
 Step fields: exactly one of `agent: <name>`, `run: <shell>`, `jill: <name>`; plus `task`, `needs`,
 `copies` (1–16 parallel copies), `writes`, `model`, `timeout`, `inputs` (for nested Jills),
-`on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)).
+`on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)), `foreach` (one run per list item, below).
 Unknown fields pass through to plug-ins.
+
+`foreach:` runs a step once per item of a list an earlier step printed, sized at run time:
+
+```yaml
+plan: { agent: planner, task: "List the repos to check. Last line: one JSON line {\"repos\": [...]}" }
+scan:
+  agent: repo-scout
+  needs: [plan]
+  foreach: steps.plan.repos   # or steps.plan when that JSON line is the list itself
+  as: repo                    # {{repo}} in task / run: (default {{item}}; env JILLS_VAR_REPO)
+  max_parallel: 4             # default 4, 1..16
+  max_items: 20               # default 20, 1..100
+  task: "Check {{repo}} for {{inputs.task}}"
+```
+
+- The list is the last line of that step's output that is valid JSON. `foreach` must name a step
+  this one needs (directly or not); a bad ref is a parse error. No JSON line, a missing field, a
+  non-list or more than `max_items` items fail the step with that reason before any item runs
+  (never truncated).
+- Items run as `scan#1`, `scan#2`, ... at most `max_parallel` at a time. A failed item never
+  cancels the others; after all ran, the step fails and names them ("2 of 5 items failed (item 2, 4)").
+  `on_fail` applies to the whole step, with every item's output as `{{feedback}}`.
+- The step output is every item's output in order, each under `## scan item <n>/<total>: <item>`.
+- An empty list skips the step; steps that need it still run. `foreach` cannot be combined with
+  `copies`, `jill:` or `merges`. A resumed run reruns a `foreach` step from the start.
+- `foreach` is the built-in `expand` plug-in (on by default): an `expand` plug-in turns one step into
+  N instances (`validate` at parse time, `expand` at run time); core only runs the instances.
+  Config `foreach: { max_parallel, max_items }` sets the defaults; a config plug-in named `foreach`
+  replaces it.
 
 Checks are explicit steps: Jills never tests a writing step on its own. After each `writes: true`
 step, add a step that needs it and checks the work: a `run:` test command (with `on_fail` back to the
