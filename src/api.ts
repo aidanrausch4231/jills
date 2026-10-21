@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_TIMEOUT, jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
 import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, uncheckedWriters, type JillDef } from "./jillfile.js";
-import { loadPlugins, type PluginSet } from "./plugins/index.js";
+import { loadPlugins, stepChecks, type PluginSet } from "./plugins/index.js";
 import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
 import { stopTagged } from "./proc.js";
@@ -24,8 +24,9 @@ export { executeRun } from "./plugins/execute-run.js";
 
 async function context(o: BaseOpts = {}): Promise<Ctx> {
   const config = configOf(o);
-  const jills = scanJills(config.jill_paths).items;
-  return { config, plugins: await loadPlugins(config), jills, lookup: (n) => jills.get(n) };
+  const plugins = await loadPlugins(config);
+  const jills = scanJills(config.jill_paths, stepChecks(plugins)).items;
+  return { config, plugins, jills, lookup: (n) => jills.get(n) };
 }
 
 const summarize = (j: JillDef): JillSummary => ({ name: j.name, description: j.description, when: j.when, inputs: j.inputs.map((i) => i.name), required: j.inputs.filter((i) => i.required && i.default === undefined).map((i) => i.name) });
@@ -238,7 +239,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
   const warnings: string[] = [];
   const c = await context(o).catch((e: Error) => e);
   if (c instanceof Error) return { errors: [c.message], warnings, jills: [] };
-  const scan = scanJills(c.config.jill_paths);
+  const scan = scanJills(c.config.jill_paths, stepChecks(c.plugins));
   const errors = [...scan.errors];
   warnings.push(...c.plugins.warnings);
   for (const [n, paths] of scan.duplicates) warnings.push(`Jill "${n}" found more than once; using ${paths[0]} (also: ${paths.slice(1).join(", ")})`);
@@ -274,7 +275,7 @@ function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, j
   const par = (root.worktree && c.plugins.isolation.get(root.box ?? "worktree")?.parallel?.(jill, c.lookup)) || new Set<string>();
   for (const s of jill.steps) {
     const loop = s.onFail ? `on fail back to ${s.onFail.backTo}, max ${s.onFail.maxRounds} rounds` : "";
-    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : s.extra.foreach !== undefined ? `foreach ${String(s.extra.foreach)}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);
+    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);
     const head = `${indent}- ${s.name}${s.jill ? `: jill ${s.jill}` : ""}${meta.length ? ` (${meta.join("; ")})` : ""}`;
     if (s.jill) { // nested Jill: the same inputs the engine gives it
       yield { line: head };

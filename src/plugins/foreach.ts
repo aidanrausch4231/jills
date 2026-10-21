@@ -12,8 +12,13 @@
  * The list is the last line of the earlier step's output that is valid JSON (one line). Each
  * item runs as `<step>#<n>`; a failed item never cancels the others, and the step fails after
  * all items ran, naming the failed ones. An empty list skips the step (dependents still run).
+ *
+ * An `expand` plug-in, on by default. Config `foreach: { max_parallel, max_items }` sets the
+ * defaults for steps that do not set their own; a config plug-in named "foreach" replaces this one.
  */
+import type { JillsConfig } from "../config.js";
 import type { StepDef } from "../jillfile.js";
+import type { ExpandPlugin } from "./types.js";
 
 export interface Foreach { step: string; field?: string; as: string; maxParallel: number; maxItems: number }
 export const DEFAULT_PARALLEL = 4, DEFAULT_ITEMS = 20, MAX_PARALLEL = 16, MAX_ITEMS = 100;
@@ -21,13 +26,13 @@ const REF = /^steps\.([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?$/;
 const RESERVED = new Set(["inputs", "steps", "task", "copy", "run_id", "round", "feedback"]);
 const int = (v: unknown, def: number) => (v === undefined ? def : Number(v));
 
-/** The step's foreach settings (from its pass-through fields), or undefined. */
-export function foreachOf(s: Pick<StepDef, "extra">): Foreach | undefined {
-  const x = s.extra;
+/** The step's foreach settings (from its pass-through fields, else config `foreach:`), or undefined. */
+export function foreachOf(s: Pick<StepDef, "extra">, config?: JillsConfig): Foreach | undefined {
+  const x = s.extra, d = (config?.raw.foreach ?? {}) as Record<string, unknown>;
   if (x.foreach === undefined) return undefined;
   const m = REF.exec(String(x.foreach));
   return { step: m?.[1] ?? "", field: m?.[2], as: x.as === undefined ? "item" : String(x.as),
-    maxParallel: int(x.max_parallel, DEFAULT_PARALLEL), maxItems: int(x.max_items, DEFAULT_ITEMS) };
+    maxParallel: int(x.max_parallel ?? d.max_parallel, DEFAULT_PARALLEL), maxItems: int(x.max_items ?? d.max_items, DEFAULT_ITEMS) };
 }
 
 /** Parse-time errors for one step; `before` = the steps it needs, directly or not. */
@@ -63,16 +68,6 @@ export function foreachItems(f: Foreach, outputs: Record<string, { output: strin
   return list.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
 }
 
-/** fn(0..count-1) with at most `limit` running at once; results in order. */
-export async function pool<T>(count: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
-  const out: T[] = new Array(count);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, count) }, async () => {
-    while (next < count) { const i = next++; out[i] = await fn(i); }
-  }));
-  return out;
-}
-
 /** The step output: every item's output in order, then which items failed. */
 export function foreachOutput(name: string, items: string[], res: { ok: boolean; output: string }[]): string {
   const failed = res.flatMap((r, i) => (r.ok ? [] : [i + 1]));
@@ -81,3 +76,22 @@ export function foreachOutput(name: string, items: string[], res: { ok: boolean;
   return parts.join("\n\n---\n\n");
 }
 export const foreachFailed = (n: number, failed: number[]) => `foreach: ${failed.length} of ${n} items failed (item ${failed.join(", ")})`;
+
+const foreach: ExpandPlugin = {
+  slot: "expand",
+  apiVersion: 1,
+  name: "foreach",
+  validate: foreachErrors,
+  expand(step, outputs, config) {
+    const f = foreachOf(step, config);
+    if (!f) return undefined;
+    const items = foreachItems(f, outputs); // throws the reason the step fails
+    return {
+      items: items.map((it) => ({ [f.as]: it })),
+      maxParallel: f.maxParallel,
+      join: (res) => foreachOutput(step.name, items, res),
+      failed: (res) => foreachFailed(items.length, res.flatMap((r, i) => (r.ok ? [] : [i + 1]))),
+    };
+  },
+};
+export default foreach;

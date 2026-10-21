@@ -136,6 +136,10 @@ scan:
 - The step output is every item's output in order, each under `## scan item <n>/<total>: <item>`.
 - An empty list skips the step; steps that need it still run. `foreach` cannot be combined with
   `copies`, `jill:` or `merges`. A resumed run reruns a `foreach` step from the start.
+- `foreach` is the built-in `expand` plug-in (on by default): an `expand` plug-in turns one step into
+  N instances (`validate` at parse time, `expand` at run time); core only runs the instances.
+  Config `foreach: { max_parallel, max_items }` sets the defaults; a config plug-in named `foreach`
+  replaces it.
 
 Checks are explicit steps: Jills never tests a writing step on its own. After each `writes: true`
 step, add a step that needs it and checks the work: a `run:` test command (with `on_fail` back to the

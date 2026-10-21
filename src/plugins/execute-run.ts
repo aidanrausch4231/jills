@@ -4,7 +4,7 @@ import { HEARTBEAT_MS, RunEngine, type EventListener } from "../engine.js";
 import { scanJills } from "../jillfile.js";
 import { bootId, signal, stopTagged } from "../proc.js";
 import { loadRecord, markTerminal, saveRecord, stuckReason, TERMINAL, type RunRecord } from "../runs.js";
-import { loadPlugins } from "./index.js";
+import { loadPlugins, stepChecks } from "./index.js";
 
 type Options = { home?: string; onEvent?: EventListener; signal?: AbortSignal; engine?: boolean };
 
@@ -46,7 +46,7 @@ export async function executeRun(id: string, o: Options = {}): Promise<RunRecord
     }
   }
   const resume = o.engine && (r.state !== "queued" || Object.keys(r.steps).length > 0);
-  const jills = scanJills(config.jill_paths).items;
+  const jills = scanJills(config.jill_paths, stepChecks(plugins)).items;
   if (resume) {
     for (const s of Object.values(r.steps)) if (s.state !== "done") s.state = "pending";
     delete r.error;

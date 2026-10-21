@@ -46,3 +46,11 @@ export function newId(): string {
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** fn(0..count-1) with at most `limit` running at once; results in order. */
+export async function pool<T>(count: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+  const out: T[] = new Array(count);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, count) }, async () => { while (next < count) { const i = next++; out[i] = await fn(i); } }));
+  return out;
+}
+

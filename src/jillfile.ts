@@ -3,7 +3,9 @@ import { basename, dirname, join } from "node:path";
 import YAML from "yaml";
 import { renderShellTemplate } from "./template.js";
 import { parseDuration } from "./util.js";
-import { foreachErrors } from "./plugins/foreach.js";
+
+/** Extra parse-time step checks from plug-ins (e.g. expanders); `before` = steps it needs, directly or not. */
+export type StepCheck = (s: StepDef, before: Set<string>) => string[];
 
 export type InputDef = { name: string; description?: string; default?: string; required?: boolean };
 
@@ -99,7 +101,7 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
   };
 }
 
-export function parseJill(text: string, path = "JILL.md"): JillDef {
+export function parseJill(text: string, path = "JILL.md", stepCheck?: StepCheck): JillDef {
   const { data, body } = parseFrontMatter(text, path);
   const errs: string[] = [];
   const name = data.name ? String(data.name) : path.endsWith("JILL.md") ? basename(dirname(path)) : "";
@@ -127,7 +129,7 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   if (cyc.length) errs.push(`steps form a cycle through: ${cyc.join(", ")}`);
   for (const s of steps) {
     if (s.onFail && !ancestors(steps, s.name).has(s.onFail.backTo)) errs.push(`step ${s.name}: on_fail back_to "${s.onFail.backTo}" must be an earlier step it needs (directly or not)`);
-    errs.push(...foreachErrors(s, ancestors(steps, s.name)));
+    if (stepCheck) errs.push(...stepCheck(s, ancestors(steps, s.name)));
     if (s.merges && data.worktree === false) errs.push(`step ${s.name}: merges: true needs worktree: true`);
     if (s.merges && (s.copies !== 1 || steps.some((x) => x !== s && !ancestors(steps, s.name).has(x.name)))) errs.push(`step ${s.name}: merges: true must be the single final step (every other step comes before it) without copies`);
   }
@@ -199,9 +201,9 @@ export function scanFirstWins<T extends { name: string }>(paths: string[], files
 }
 
 /** Scan jill_paths in order (folders of <name>/JILL.md); first name wins. */
-export function scanJills(paths: string[]): Scan<JillDef> {
+export function scanJills(paths: string[], stepCheck?: StepCheck): Scan<JillDef> {
   const files = (dir: string) => readdirSync(dir).sort().map((e) => join(dir, e, "JILL.md")).filter((p) => existsSync(p));
-  return scanFirstWins(paths, files, (f) => parseJill(readFileSync(f, "utf8"), f));
+  return scanFirstWins(paths, files, (f) => parseJill(readFileSync(f, "utf8"), f, stepCheck));
 }
 
 /**

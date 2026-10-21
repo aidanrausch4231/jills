@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runNow } from "../src/api.js";
 import { parseJill } from "../src/jillfile.js";
+import { builtinPlugins, stepChecks } from "../src/plugins/index.js";
 import { tmp, tmpHome, writeJill } from "./helpers.js";
 
 const span = (r: { steps: Record<string, { started?: string; finished?: string }> }, k: string) =>
@@ -35,7 +36,7 @@ steps:
   const r = await runNow("none", { home, cwd: tmp() });
   assert.equal(r.state, "done", r.error);
   assert.deepEqual(Object.keys(r.steps).sort(), ["after", "plan"]);
-  assert.ok(r.events.some((e) => e.type === "step-done" && /foreach list is empty/.test(String((e as { text?: string }).text ?? JSON.stringify(e)))));
+  assert.ok(r.events.some((e) => e.type === "step-done" && /skipped: no instances to run/.test(String((e as { text?: string }).text ?? JSON.stringify(e)))));
 });
 
 test("foreach: one failed item never cancels the others; the step names it", async () => {
@@ -91,8 +92,8 @@ test("foreach: runtime list errors (no JSON, missing field, not a list) fail the
   }
 });
 
-test("foreach: bad refs and settings are validation errors", () => {
-  const bad = (step: string) => () => parseJill(`---\nname: bad\nsteps:\n  plan: {run: echo}\n  other: {run: echo}\n  ask: ${step}\n---\n`, "bad/JILL.md");
+test("foreach: bad refs and settings are validation errors (through the expand plug-in validate hook)", () => {
+  const bad = (step: string) => () => parseJill(`---\nname: bad\nsteps:\n  plan: {run: echo}\n  other: {run: echo}\n  ask: ${step}\n---\n`, "bad/JILL.md", stepChecks(builtinPlugins()));
   assert.throws(bad("{run: echo, needs: [plan], foreach: steps.nope}"), /foreach refers to steps\.nope, which is not an earlier step it needs/);
   assert.throws(bad("{run: echo, needs: [plan], foreach: steps.other}"), /steps\.other, which is not an earlier step/);
   assert.throws(bad("{run: echo, needs: [plan], foreach: plan.output}"), /foreach must be steps\.<step> or steps\.<step>\.<field>/);
@@ -101,4 +102,18 @@ test("foreach: bad refs and settings are validation errors", () => {
   assert.throws(bad("{run: echo, needs: [plan], foreach: steps.plan, as: steps}"), /as must be a plain name/);
   assert.throws(bad("{run: echo, needs: [plan], max_parallel: 2}"), /max_parallel needs foreach:/);
   assert.doesNotThrow(bad("{run: echo, needs: [plan], foreach: steps.plan.qs, as: q, max_parallel: 3, max_items: 50}"));
+});
+
+test("foreach: config foreach: sets the defaults; jills check reports a bad ref", async () => {
+  const home = tmpHome("foreach: {max_items: 2}\n");
+  writeJill(home, "cfg", `worktree: false
+steps:
+  plan: {run: "echo '[1, 2, 3]'"}
+  ask: {run: echo hi, needs: [plan], foreach: steps.plan}`);
+  const r = await runNow("cfg", { home, cwd: tmp() });
+  assert.equal(r.state, "failed");
+  assert.match(r.error!, /3 items, over max_items 2/);
+  writeJill(home, "badref", "worktree: false\nsteps:\n  ask: {run: echo hi, foreach: steps.nope}");
+  const { check } = await import("../src/api.js");
+  assert.match((await check({ home })).errors.join("\n"), /foreach refers to steps\.nope/);
 });
