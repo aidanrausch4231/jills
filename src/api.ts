@@ -274,7 +274,7 @@ function* describeSteps(c: Ctx, root: JillDef, inputs: Record<string, string>, j
   const par = (root.worktree && c.plugins.isolation.get(root.box ?? "worktree")?.parallel?.(jill, c.lookup)) || new Set<string>();
   for (const s of jill.steps) {
     const loop = s.onFail ? `on fail back to ${s.onFail.backTo}, max ${s.onFail.maxRounds} rounds` : "";
-    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);
+    const meta = [s.needs.length ? `needs ${s.needs.join(",")}` : "", s.copies > 1 ? `copies ${s.copies}` : s.extra.foreach !== undefined ? `foreach ${String(s.extra.foreach)}` : "", s.writes ? "writes" : "", par.has(s.name) ? "child worktree" : "", s.timeout ? `timeout ${String(s.timeout)}` : "", loop, s.merges ? "merges into your branch" : ""].filter(Boolean);
     const head = `${indent}- ${s.name}${s.jill ? `: jill ${s.jill}` : ""}${meta.length ? ` (${meta.join("; ")})` : ""}`;
     if (s.jill) { // nested Jill: the same inputs the engine gives it
       yield { line: head };

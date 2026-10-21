@@ -8,6 +8,8 @@ export interface TemplateVars {
   /** Back-arrow loops: this step's 1-based round and the failed step's output tail ("" in round 1). */
   round?: number;
   feedback?: string;
+  /** Extra named placeholders, e.g. a foreach step's {{item}} (env JILLS_VAR_ITEM in run: commands). */
+  named?: Record<string, string>;
 }
 
 const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/y;
@@ -19,6 +21,7 @@ function resolveKey(vars: TemplateVars, key: string): { value?: string; env: str
   if (head === "inputs" && name && !tail) return { value: vars.inputs[name], env: `JILLS_INPUT_${up(name)}` };
   if (head === "steps" && name && tail === "output" && !more) return { value: vars.steps?.[name]?.output, env: `JILLS_STEP_OUT_${up(name)}` };
   if (key === "task") return { value: vars.task ?? vars.inputs.task, env: "JILLS_TASK" };
+  if (vars.named && Object.hasOwn(vars.named, key)) return { value: vars.named[key], env: `JILLS_VAR_${up(key)}` };
   if (key === "copy" || key === "run_id" || key === "round" || key === "feedback") return { value: vars[key]?.toString(), env: `JILLS_${up(key)}` };
   return { env: `JILLS_VAR_${up(key)}` };
 }

@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import YAML from "yaml";
 import { renderShellTemplate } from "./template.js";
 import { parseDuration } from "./util.js";
+import { foreachErrors } from "./plugins/foreach.js";
 
 export type InputDef = { name: string; description?: string; default?: string; required?: boolean };
 
@@ -126,6 +127,7 @@ export function parseJill(text: string, path = "JILL.md"): JillDef {
   if (cyc.length) errs.push(`steps form a cycle through: ${cyc.join(", ")}`);
   for (const s of steps) {
     if (s.onFail && !ancestors(steps, s.name).has(s.onFail.backTo)) errs.push(`step ${s.name}: on_fail back_to "${s.onFail.backTo}" must be an earlier step it needs (directly or not)`);
+    errs.push(...foreachErrors(s, ancestors(steps, s.name)));
     if (s.merges && data.worktree === false) errs.push(`step ${s.name}: merges: true needs worktree: true`);
     if (s.merges && (s.copies !== 1 || steps.some((x) => x !== s && !ancestors(steps, s.name).has(x.name)))) errs.push(`step ${s.name}: merges: true must be the single final step (every other step comes before it) without copies`);
   }

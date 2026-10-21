@@ -8,12 +8,12 @@ import type { RunnerPlugin } from "./types.js";
 export type Outputs = Record<string, { output: string }>;
 /** A step's round (1-based) and the failing step's feedback from round 2. */
 export type Loop = { round: number; feedback: string };
-type StepCtx = { config: JillsConfig; plugins: PluginSet; runId: string; key: string; cwd: string; box?: string; copy?: number; steps: Outputs; loop?: Loop };
+type StepCtx = { config: JillsConfig; plugins: PluginSet; runId: string; key: string; cwd: string; box?: string; copy?: number; steps: Outputs; loop?: Loop; named?: Record<string, string> };
 
 /** Shared command preparation for real and dry runs; shell values always travel via env. */
 export function stepCommand(step: StepDef, jill: JillDef, inputs: Record<string, string>, c: StepCtx) {
   const runner: RunnerPlugin | undefined = c.plugins.runners.find((p) => p.canRun(step, c.config, { jill, box: c.box }));
-  const vars = { inputs, task: inputs.task, copy: c.copy, run_id: c.runId, steps: c.steps, ...c.loop };
+  const vars = { inputs, task: inputs.task, copy: c.copy, run_id: c.runId, steps: c.steps, ...c.loop, named: c.named };
   const shell = step.run !== undefined ? renderShellTemplate(step.run, vars) : undefined;
   const text = shell ? shell.text : renderTemplate(step.task ?? "{{task}}", vars);
   const env: Record<string, string> = { JILLS_HOME: c.config.home, JILLS_RUN_ID: c.runId, JILLS_STEP: c.key, JILLS_JILL: jill.name, JILLS_WORKSPACE: c.cwd };
