@@ -12,7 +12,7 @@ after(resetKeywordJev);
 
 const ID = "-c user.name=t -c user.email=t@t";
 /** The documented procedure: squash the run branch into the base in the user's checkout. */
-const SQUASH = `cd "$JILLS_BASE_REPO" && git merge --squash "$JILLS_RUN_BRANCH" && git ${ID} commit -q -m "squash: $JILLS_RUN_BRANCH"`;
+const SQUASH = `cd "$JILLS_BASE_REPO" && git ${ID} merge --squash "$JILLS_RUN_BRANCH" && git ${ID} commit -q -m "squash: $JILLS_RUN_BRANCH"`;
 const jill = (mergeRun: string, extra = "", build = "echo built > new.txt") => `steps:
   build: {run: '${build}; echo "base=[\${JILLS_BASE_REPO-}\${JILLS_BASE_BRANCH-}\${JILLS_RUN_BRANCH-}]"', writes: true}
   merge:
