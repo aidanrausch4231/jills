@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_TIMEOUT, jillsHome, loadConfig, setConfigValue, type JillsConfig } from "./config.js";
 import { nestedInputs, RunEngine, stepCommand, type EventListener } from "./engine.js";
-import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, type JillDef } from "./jillfile.js";
+import { checkNesting, NO_WORKTREE_NOTE, refusal, scanJills, uncheckedWriters, type JillDef } from "./jillfile.js";
 import { loadPlugins, type PluginSet } from "./plugins/index.js";
 import { withJevKey } from "./plugins/matcher-jev.js";
 import type { ChatChange, JillSummary, MatchResult, SuggestCtx, Suggestion, Turn } from "./plugins/types.js";
@@ -254,6 +254,7 @@ export async function check(o: BaseOpts = {}): Promise<{ errors: string[]; warni
     if (refused) err(refused);
     if (!j.worktree)
       warnings.push(`Jill "${j.name}" sets worktree: false (${NO_WORKTREE_NOTE}; Jills never commits). Worktrees are strongly recommended: remove the line or set worktree: true.`);
+    warnings.push(...uncheckedWriters(j));
     for (const s of j.steps.filter((x) => x.merges)) warnings.push(`Jill "${j.name}" step ${s.name} merges into the branch the run started from when done (merges: true)`);
     try {
       checkNesting(j, c.lookup); // first: the walk below follows nested Jills

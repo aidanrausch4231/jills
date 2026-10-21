@@ -10,11 +10,8 @@ export interface StepDef {
   name: string;
   /** Exactly one of agent, run, jill; `task` is the agent's task text. */
   agent?: string; run?: string; jill?: string; task?: string;
-  needs: string[];
-  copies: number;
-  writes: boolean;
-  model?: string;
-  timeout?: string | number;
+  needs: string[]; copies: number; writes: boolean;
+  model?: string; timeout?: string | number;
   /** Inputs passed to a nested Jill (templated). Defaults to the parent's inputs. */
   inputs?: Record<string, string>;
   /** Back-arrow: on a real failure rerun `backTo` and every step after it, `maxRounds` rounds in all. */
@@ -69,9 +66,7 @@ const rest = (o: Record<string, unknown>, known: string[]) => Object.fromEntries
 const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** Run fn; a throw becomes one error line. */
-const tryAll = (errs: string[], prefix: string, fn: () => unknown) => {
-  try { fn(); } catch (e) { errs.push(prefix + (e as Error).message); }
-};
+const tryAll = (errs: string[], prefix: string, fn: () => unknown) => { try { fn(); } catch (e) { errs.push(prefix + (e as Error).message); } };
 
 function parseStep(name: string, s: Record<string, unknown>, errs: string[]): StepDef {
   const kinds = ["agent", "run", "jill"].filter((k) => s[k] !== undefined);
@@ -160,6 +155,11 @@ export function ancestors(steps: StepDef[], name: string, seen = new Set<string>
   for (const d of steps.find((s) => s.name === name)?.needs ?? []) if (!seen.has(d)) ancestors(steps, d, seen.add(d));
   return seen;
 }
+
+/** One warning per `writes: true` step that no step needing it (directly or not) checks: a `run:` step, `verdict: true` or `checks:`. */
+export const uncheckedWriters = (j: JillDef): string[] => j.steps
+  .filter((w) => w.writes && !j.steps.some((s) => (s.run !== undefined || s.extra.verdict === true || (Array.isArray(s.extra.checks) && s.extra.checks.length > 0)) && ancestors(j.steps, s.name).has(w.name)))
+  .map((w) => `${j.name}: step "${w.name}" writes code but nothing after it tests or reviews it (add a run: test step, verdict: true, or checks:)`);
 
 /**
  * Settings whose plug-ins are not installed are refused: `box: <name>` needs an

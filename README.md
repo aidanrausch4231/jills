@@ -112,6 +112,11 @@ Step fields: exactly one of `agent: <name>`, `run: <shell>`, `jill: <name>`; plu
 `on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)).
 Unknown fields pass through to plug-ins.
 
+Checks are explicit steps: Jills never tests a writing step on its own. After each `writes: true`
+step, add a step that needs it and checks the work: a `run:` test command (with `on_fail` back to the
+writer), a reviewer with `verdict: true`, or a step with `checks: [...]`. `jills check` warns about
+every writing step that no later step tests or reviews (a warning, not an error).
+
 Templates: `{{inputs.x}}`, `{{task}}`, `{{copy}}`, `{{run_id}}`, `{{steps.<name>.output}}`,
 `{{round}}`, `{{feedback}}`.
 In `run:` commands no value is ever pasted into the shell text: each placeholder becomes an env

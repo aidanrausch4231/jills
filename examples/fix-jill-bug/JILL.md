@@ -24,12 +24,17 @@ steps:
       Fix this bug: {{inputs.task}}
       Research:
       {{steps.research.output}}
-      This is round {{round}}. Feedback from the last failed review or merge (empty in round 1):
+      This is round {{round}}. Feedback from the last failed test, review or merge (empty in round 1):
       {{feedback}}
       Keep the change small, add or update a test, run the tests. Do not commit; Jills commits for you.
+  test:
+    run: npm test
+    needs: [build]
+    timeout: 15m
+    on_fail: { back_to: build, max_rounds: 3 }
   review:
     agent: harness-reviewer
-    needs: [build]
+    needs: [test]
     verdict: true
     timeout: 20m
     on_fail: { back_to: build, max_rounds: 3 }
@@ -49,8 +54,9 @@ steps:
       Squash-merge this run into the user's branch. Bug fixed: {{inputs.task}}
       Use this commit subject: "Fix: {{inputs.task}}" (shorten it to one line under 72 characters).
 ---
-Runs on its own branch `jills/fix-jill-bug-<run>`. The review loops back to the build step until it
-says `VERDICT: clean` (at most 3 rounds). Then the `merge` step (the only step with `merges: true`)
+Runs on its own branch `jills/fix-jill-bug-<run>`. The `test` step runs `npm test` (change it to your
+repo's test command) and loops back to the build step while tests fail; the review then loops back
+until it says `VERDICT: clean` (at most 3 rounds each). Then the `merge` step (the only step with `merges: true`)
 squash-merges the run branch into the branch you started the run from. Jills refuses to merge into a
 checkout with uncommitted changes or on another branch, and accepts the merge only if your branch got
 exactly one new commit holding the squash of the run branch. When your branch moved and conflicts

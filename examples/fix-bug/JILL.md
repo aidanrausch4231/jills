@@ -22,13 +22,25 @@ steps:
       Fix this bug: {{inputs.task}}
       Research so far:
       {{steps.research.output}}
+      This is round {{round}}. Output of the last failed test or review (empty in round 1):
+      {{feedback}}
       Keep the change small, add or update a test, run the tests. Do not commit; Jills commits for you.
+  test:
+    run: npm test
+    needs: [implement]
+    timeout: 15m
+    on_fail: { back_to: implement, max_rounds: 3 }
   review:
     agent: harness-reviewer
-    needs: [implement]
+    needs: [test]
+    verdict: true
     timeout: 20m
+    on_fail: { back_to: implement, max_rounds: 3 }
     task: |
       Review the last commit in this worktree (git show HEAD) against the bug: {{inputs.task}}
       Report defects with path:line. Do not edit files.
+      End with VERDICT: clean or VERDICT: <problem>.
 ---
-Runs on its own branch `jills/fix-bug-<run>`; nothing merges into your branch.
+Runs on its own branch `jills/fix-bug-<run>`; nothing merges into your branch. The `test` step runs
+`npm test` (change it to your repo's test command); a failing test or a review that does not end
+`VERDICT: clean` sends the work back to `implement` (at most 3 rounds).

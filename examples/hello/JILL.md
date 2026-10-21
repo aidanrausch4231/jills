@@ -21,6 +21,9 @@ steps:
     needs: [count]
     writes: true
     timeout: 30s
+  check:
+    run: grep -q "signed by jills run" hello.txt
+    needs: [sign]
 ---
 Plain `run:` commands only, so it needs no agent CLI or network. Tests and the
 end-to-end check use it.
