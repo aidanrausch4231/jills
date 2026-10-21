@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseJill, refusal } from "../src/jillfile.js";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseJill, refusal, uncheckedWriters } from "../src/jillfile.js";
 import { start, dryRun, check } from "../src/api.js";
 import { tmpHome, tmpRepo, writeJill } from "./helpers.js";
 
@@ -85,4 +87,24 @@ test("required inputs are enforced", async () => {
   const home = tmpHome();
   writeJill(home, "needy", "inputs:\n  - {name: task, required: true}\nsteps:\n  a: {run: 'echo {{inputs.task}}'}");
   await assert.rejects(start("needy", { home, cwd: tmpRepo() }), /needs input\(s\): task/);
+});
+
+test("uncheckedWriters warns when no later step tests or reviews a writing step", () => {
+  const w = (steps: string) => uncheckedWriters(parseJill(`---\nname: j\nsteps:\n${steps}\n---\n`));
+  const impl = "  impl: {agent: a, writes: true}\n";
+  assert.deepEqual(w(impl), ['j: step "impl" writes code but nothing after it tests or reviews it (add a run: test step, verdict: true, or checks:)']);
+  assert.equal(w(impl + "  review: {agent: r, needs: [impl]}").length, 1, "a plain agent step is not a check");
+  assert.equal(w(impl + "  other: {run: npm test}").length, 1, "a run step that does not need the writer is not a check");
+  assert.deepEqual(w(impl + "  test: {run: npm test, needs: [impl]}"), []);
+  assert.deepEqual(w(impl + "  review: {agent: r, needs: [impl], verdict: true}"), []);
+  assert.deepEqual(w(impl + "  review: {agent: r, needs: [impl], checks: [lint]}"), []);
+  assert.deepEqual(w(impl + "  mid: {agent: r, needs: [impl]}\n  test: {run: npm test, needs: [mid]}"), [], "transitive");
+  assert.deepEqual(w("  a: {run: x}"), [], "no writers, no warning");
+});
+
+test("every example Jill passes the unchecked-writer warning", () => {
+  const dir = new URL("../../examples/", import.meta.url).pathname;
+  const files = readdirSync(dir).map((e) => join(dir, e, "JILL.md")).filter((p) => existsSync(p));
+  assert.ok(files.length >= 4);
+  for (const f of files) assert.deepEqual(uncheckedWriters(parseJill(readFileSync(f, "utf8"), f)), [], f);
 });

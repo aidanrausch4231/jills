@@ -16,5 +16,9 @@ steps:
   #   task: "{{inputs.task}}"
   #   needs: [first]
   #   writes: true
+  # test:                     # checks are explicit steps: test what a writing step changed
+  #   run: npm test
+  #   needs: [second]
+  #   on_fail: { back_to: second, max_rounds: 3 }
 ---
 Notes for people reading this Jill.
