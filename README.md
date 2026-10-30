@@ -109,8 +109,15 @@ steps:
 
 Step fields: exactly one of `agent: <name>`, `run: <shell>`, `jill: <name>`; plus `task`, `needs`,
 `copies` (1–16 parallel copies), `writes`, `model`, `timeout`, `inputs` (for nested Jills),
-`on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)), `foreach` (one run per list item, below).
-Unknown fields pass through to plug-ins.
+`on_fail` (see [Loops](#loops)), `verdict: true`, `merges: true` (see [Merging](#merging)), `foreach` (one run per list item, below),
+`always: true` (below). Unknown fields pass through to plug-ins.
+
+`always: true` marks a cleanup step (restore state, leak check, summary). Always steps run once, in
+file order, after the normal steps finish or stop (a failure, a timeout, `on_fail` rounds used up),
+even when the steps they need failed or never ran. Env `JILLS_RUN_STATUS` is `pass` or `fail` so far.
+The run fails when any normal or always step failed; a passing always step never clears a failure.
+Only `agent:`/`run:` steps without `on_fail` or `merges` may be always steps, and only always steps
+may need one. `jills stop` stops the run without them (it kills every run process).
 
 `foreach:` runs a step once per item of a list an earlier step printed, sized at run time:
 

@@ -11,9 +11,9 @@ export type InputDef = { name: string; description?: string; default?: string; r
 
 export interface StepDef {
   name: string;
-  /** Exactly one of agent, run, jill; `task` is the agent's task text. */
+  /** Exactly one of agent, run, jill; `task` is the agent's task text. `always`: cleanup, runs after the normal steps finish or stop. */
   agent?: string; run?: string; jill?: string; task?: string;
-  needs: string[]; copies: number; writes: boolean;
+  needs: string[]; copies: number; writes: boolean; always?: boolean;
   model?: string; timeout?: string | number;
   /** Inputs passed to a nested Jill (templated). Defaults to the parent's inputs. */
   inputs?: Record<string, string>;
@@ -41,7 +41,7 @@ export interface JillDef {
 }
 
 const JILL_KEYS = ["name", "description", "when", "inputs", "steps", "worktree", "box", "machine", "timeout"];
-const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs", "on_fail", "merges"];
+const STEP_KEYS = ["agent", "run", "jill", "task", "needs", "copies", "writes", "model", "timeout", "inputs", "on_fail", "merges", "always"];
 export const MAX_COPIES = 16;
 export const MAX_DEPTH = 4;
 export const MAX_ROUNDS = 10;
@@ -83,6 +83,7 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
   const onFail = isMap(of) && typeof of.back_to === "string" && Number.isInteger(rounds) && rounds >= 1 ? { backTo: of.back_to, maxRounds: Math.min(rounds, MAX_ROUNDS) } : undefined;
   if (s.merges === true && (s.jill !== undefined || s.writes === true)) errs.push(`step ${name}: merges: true needs an agent: or run: step without writes: true`);
   if (of !== undefined && !onFail) errs.push(`step ${name}: on_fail must be { back_to: <step>, max_rounds: 1..${MAX_ROUNDS} }`);
+  if ((s.always !== undefined && typeof s.always !== "boolean") || (s.always === true && (s.jill !== undefined || of !== undefined || s.merges !== undefined))) errs.push(`step ${name}: always must be true or false, on an agent: or run: step without on_fail or merges`);
   return {
     name,
     agent: str(s.agent),
@@ -96,7 +97,7 @@ function parseStep(name: string, s: Record<string, unknown>, errs: string[]): St
     timeout: s.timeout as string | number | undefined,
     inputs: isMap(s.inputs) ? Object.fromEntries(Object.entries(s.inputs).map(([k, v]) => [k, String(v)])) : undefined,
     onFail,
-    merges: s.merges === true,
+    merges: s.merges === true, always: s.always === true,
     extra: rest(s, STEP_KEYS),
   };
 }
@@ -124,14 +125,14 @@ export function parseJill(text: string, path = "JILL.md", stepCheck?: StepCheck)
     if (steps.length === 0) errs.push("steps is empty");
   }
   const names = new Set(steps.map((s) => s.name));
-  for (const s of steps) for (const n of s.needs) if (!names.has(n)) errs.push(`step ${s.name}: needs unknown step "${n}"`);
+  for (const s of steps) for (const n of s.needs) if (!names.has(n)) errs.push(`step ${s.name}: needs unknown step "${n}"`); else if (!s.always && steps.find((x) => x.name === n)?.always) errs.push(`step ${s.name}: needs always step "${n}"; only always steps may need one`);
   const cyc = steps.filter((s) => ancestors(steps, s.name).has(s.name)).map((s) => s.name);
   if (cyc.length) errs.push(`steps form a cycle through: ${cyc.join(", ")}`);
   for (const s of steps) {
     if (s.onFail && !ancestors(steps, s.name).has(s.onFail.backTo)) errs.push(`step ${s.name}: on_fail back_to "${s.onFail.backTo}" must be an earlier step it needs (directly or not)`);
     if (stepCheck) errs.push(...stepCheck(s, ancestors(steps, s.name)));
     if (s.merges && data.worktree === false) errs.push(`step ${s.name}: merges: true needs worktree: true`);
-    if (s.merges && (s.copies !== 1 || steps.some((x) => x !== s && !ancestors(steps, s.name).has(x.name)))) errs.push(`step ${s.name}: merges: true must be the single final step (every other step comes before it) without copies`);
+    if (s.merges && (s.copies !== 1 || steps.some((x) => x !== s && !x.always && !ancestors(steps, s.name).has(x.name)))) errs.push(`step ${s.name}: merges: true must be the single final step (every other step comes before it) without copies`);
   }
   tryAll(errs, "", () => parseDuration(data.timeout));
   const box = data.box == null || data.box === false ? undefined : data.box;
