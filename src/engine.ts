@@ -32,11 +32,11 @@ export interface EngineOpts {
 }
 
 /**
- * Runs one Jill's step graph for a run record. Steps whose `needs` are done
- * start in parallel; `copies` start N instances; `jill:` steps run inline in the
- * same run and workspace. The first failing step stops the run, unless its
- * `on_fail` back-arrow sends work back to an earlier step (bounded rounds; then
- * needs-you). Only this runner signals the step processes it spawned.
+ * Runs one Jill's step graph for a run record. Steps whose `needs` are done start
+ * in parallel; `copies` start N instances; `jill:` steps run inline in the same run
+ * and workspace. The first failing step stops the run, unless its `on_fail` back-arrow
+ * sends work back to an earlier step (bounded rounds; then needs-you). Then `always`
+ * steps run, even after a failure. Only this runner signals the processes it spawned.
  */
 export class RunEngine {
   private abort = new AbortController();
@@ -156,7 +156,7 @@ export class RunEngine {
     const running = new Map<string, Promise<void>>();
     const [rounds, loops] = [new Map<string, number>(), new Map<string, number>()]; // starts per step; back-arrows taken per failing step
     const reusable = this.o.resume ? resumeSteps(this.record, jill, f.prefix, state, outputs, rounds) : new Set<string>();
-    let feedback = "";
+    let feedback = "", fin = false; // fin: the always phase (normal steps finished or stopped)
     /** A back-arrow waiting for its stale steps to stop: the steps to rerun and whether stale writes hit the shared worktree. */
     let back: { steps: string[]; discard: boolean } | undefined;
     for (;;) {
@@ -165,8 +165,8 @@ export class RunEngine {
         for (const n of back.steps) (state.set(n, "pending"), this.stale.delete(f.prefix + n));
         back = undefined;
       }
-      for (const s of this.outcome || back || this.isStale(f.prefix) ? [] : jill.steps) {
-        if (state.get(s.name) !== "pending" || !s.needs.every((n) => state.get(n) === "done")) continue;
+      for (const s of (!!this.outcome && !fin) || back || this.isStale(f.prefix) ? [] : jill.steps) {
+        if (!s.always !== !fin || state.get(s.name) !== "pending" || !s.needs.every((n) => state.get(n) === "done" || (fin && state.get(n) === "failed"))) continue;
         state.set(s.name, "running");
         const round = (rounds.get(s.name) ?? 0) + 1;
         rounds.set(s.name, round);
@@ -203,7 +203,9 @@ export class RunEngine {
         });
         running.set(s.name, p);
       }
-      if (running.size === 0 && !back) break;
+      if (running.size === 0 && !back && (fin || this.o.signal?.aborted || this.lost)) break; // `jills stop` kills every run process: no always phase
+      if (running.size === 0 && !back) fin = true; // always phase: normal steps that never finished count as failed
+      for (const s of fin ? jill.steps : []) if (!s.always && state.get(s.name) !== "done") state.set(s.name, "failed");
       if (running.size) await Promise.race(running.values());
     }
     return this.outcome ?? ([...state.values()].every((v) => v === "done") ? "done" : "failed");
@@ -219,7 +221,7 @@ export class RunEngine {
     this.record.steps[key] = rec;
     const ac = new AbortController();
     this.live.set(key, ac);
-    if (this.outcome || this.isStale(key)) return { ok: false, output: "", key };
+    if ((this.outcome && !step.always) || this.isStale(key)) return { ok: false, output: "", key };
     Object.assign(rec, { state: "running", started: now() });
     this.emit("step-started", key);
     /** End this step without success; halt = stop the whole run with that outcome (else its output tail is the feedback). */
@@ -248,7 +250,7 @@ export class RunEngine {
         rec.log = inner.at(-1)?.log;
         output = readOutput(rec.log);
       } else {
-        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, box, copy, steps: outputs, loop, named });
+        const cmd = stepCommand(step, jill, inputs, { config: this.o.config, plugins: this.o.plugins, runId: this.record.id, key, cwd: iws.dir, box, copy, steps: outputs, loop, named, status: step.always ? (this.outcome ? "fail" : "pass") : undefined });
         if (!cmd.runner) return fail("failed", "no runner plug-in can run this step");
         // merges: true — the isolation plug-in refuses a dirty or switched checkout, then judges the result; a bad result never loops.
         const base = this.record.base ?? "";
@@ -266,7 +268,7 @@ export class RunEngine {
         if (this.o.resume) rmSync(logPath, { force: true });
         rec.log = logPath;
         this.save();
-        const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: AbortSignal.any([this.abort.signal, ac.signal]), env: cmd.env, config: this.o.config });
+        const res = await cmd.runner.run({ runId: this.record.id, stepKey: key, step, jill, cwd: iws.dir, text: cmd.text, logPath, timeoutMs: cmd.timeoutMs, signal: AbortSignal.any([step.always ? (this.o.signal ?? ac.signal) : this.abort.signal, ac.signal]), env: cmd.env, config: this.o.config });
         rec.exitCode = res.exitCode;
         const merged = start && (await iso!.mergeCheck!(iws, base, start));
         const said = merged && merged.state !== "untouched" ? (merged.reason ?? `merged into ${base}`) : undefined;

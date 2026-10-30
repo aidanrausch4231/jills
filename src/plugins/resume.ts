@@ -30,7 +30,7 @@ export function stepOutput(r: RunRecord, s: StepRecord): string {
 export function resumeSteps(r: RunRecord, jill: JillDef, prefix: string,
   state: Map<string, "pending" | "running" | "done" | "failed">, outputs: Outputs, rounds: Map<string, number>): Set<string> {
   const reusable = new Set<string>();
-  const pending = new Set(jill.steps);
+  const pending = new Set(jill.steps.filter((s) => !s.always)); // always steps rerun after the resumed normal steps
   for (let progress = true; progress;) {
     progress = false;
     for (const s of pending) {
